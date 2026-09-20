@@ -18,48 +18,32 @@ and more than one app can read it.
 
 ## What it gives you
 
-The point of it is the store and the socket:
-
-- **A backlog that survives.** The node keeps its own queue for a disconnected app, but
-  it holds 8 packets on a classic ESP32 and 32 on an S3, C3, nRF52 or RP2040, and it
-  lives in RAM - a reboot or a firmware update empties it. This store is on disk and
-  bounded by your retention setting rather than by slots. Each client has its own cursor,
-  so reconnecting replays what *that* client missed, not the backlog someone else
-  already read.
+- **A backlog that survives.** The node queues packets for a disconnected app too, but
+  only 8 of them on a classic ESP32, 32 elsewhere, and only in RAM. This store is on
+  disk, bounded by retention rather than slots, and each client has its own cursor.
 - **More than one app at a time.** A node serves a single TCP client and a second
-  connection takes the link away from the first; the virtual node accepts several and
-  multiplexes them onto the one link it holds.
-- **A traffic filter.** Position, telemetry and node-info forwarding to connected apps
-  can be narrowed to favourites or switched off, so a phone does not wake for every
-  packet on the mesh.
+  connection takes the link from the first; this accepts several and multiplexes them
+  onto the one link it holds.
+- **A traffic filter.** Position, telemetry and node-info forwarding can be narrowed to
+  favourites or switched off, so a phone does not wake for every packet on the mesh.
 - **Nothing to operate.** One process, one SQLite file. No broker, no account, no cloud.
 
 ### What the node already does
 
-Worth being precise about, because it decides whether you need any of this. A Meshtastic
-node is not careless with messages while your phone is away. In
-[`MeshService::sendToPhone`](https://github.com/meshtastic/firmware/blob/master/src/mesh/MeshService.cpp)
-the queue protects text: when it is full an incoming *text* evicts the oldest entry,
-while an incoming position, telemetry or node-info packet is dropped instead. So a mesh
-with hundreds of chatty nodes does **not** push your direct messages out - a common
-assumption, and a wrong one.
-
-What the node cannot do is keep that backlog deep
+It does not lose your DMs to mesh chatter: when the queue to the phone is full,
+[`sendToPhone`](https://github.com/meshtastic/firmware/blob/master/src/mesh/MeshService.cpp)
+evicts an old *text* to make room for a new one and drops incoming position and telemetry
+instead. What it lacks is depth
 ([`MAX_RX_TOPHONE`](https://github.com/meshtastic/firmware/blob/master/src/mesh/mesh-pb-constants.h)
-is 8 or 32 packets), keep it across a reboot (persisting it is declared in the protobuf
-and marked `Not yet implemented FIXME` in `NodeDB.cpp`), or serve more than one app at a
-time
-([`ServerAPI.h`](https://github.com/meshtastic/firmware/blob/master/src/mesh/api/ServerAPI.h)).
-Those three are the gap this fills, and they are the whole of it. If your phone is away
-for an hour at a time and you point a single app at a single node, the firmware on its
-own is very likely enough.
+is 8 or 32), survival across a reboot, and more than one connected app. That is the gap
+this fills - if your phone is away an hour at a time and you run one app, the firmware is
+enough.
 
 There is also a **web UI** - messages, node list, map with position tracks, telemetry
-graphs - but treat it as a convenience, not the reason to run this. Meshtastic's own web
-client and [MeshMonitor](https://github.com/Yeraze/meshmonitor) are far richer, and this
-one exists mostly because the data was already here. Where it does earn its keep is Home
-Assistant: through the add-on it rides your existing remote access to HA, so you get an
-authenticated view of your mesh from outside the house without exposing anything.
+graphs - but treat it as a convenience; Meshtastic's own web client and
+[MeshMonitor](https://github.com/Yeraze/meshmonitor) are far richer. Where it earns its
+keep is Home Assistant: the add-on rides your existing remote access to HA, so your mesh
+is reachable from outside the house behind the login you already have.
 
 ## Operating modes
 
@@ -82,48 +66,39 @@ node over **Network**: host is the machine running this, port 4404.
 
 ## Settings
 
-Everything is a `VNODE_*` environment variable, optionally a YAML or JSON config file,
-and a handful of things live in the web UI (⚙) because they are per-install choices: the
-node's address, the basemap, whether apps may change the node's settings, muted
-conversations, telemetry display.
-
-Full list, precedence and the interesting ones explained: **[docs/configuration.md](docs/configuration.md)**.
+Everything is a `VNODE_*` environment variable or a YAML/JSON config file. A few
+per-install choices live in the web UI (⚙): the node's address, the basemap, whether apps
+may change the node's settings, muted conversations, telemetry display. Full list and
+precedence: **[docs/configuration.md](docs/configuration.md)**.
 
 ## Limitations
 
-- **WiFi nodes only.** The upstream link is TCP. BLE and USB serial would probably not
-  be hard - `meshtastic-python`, which this already uses, has `BLEInterface` and
-  `SerialInterface` - but nothing here uses them and the reconnect logic assumes a host
-  and port. Not implemented, not tested.
+- **WiFi nodes only.** The upstream link is TCP. `meshtastic-python` has `BLEInterface`
+  and `SerialInterface`, but nothing here uses them and the reconnect logic assumes a
+  host and port.
 - **One node per instance.** Run a second instance on other ports for a second node.
-- **No authentication of its own.** Port 4404 and the web UI are as open as the node's
-  own port 4403: fine on a trusted LAN, never exposed to the internet. The Home
-  Assistant add-on puts the UI behind HA's login; port 4404 stays raw TCP because the
-  phone app cannot speak anything else.
-- **One thing may talk to the node at a time.** A Meshtastic node serves a single TCP
-  client, and a new connection force-closes the previous one
-  ([firmware `ServerAPI.h`](https://github.com/meshtastic/firmware/blob/master/src/mesh/api/ServerAPI.h)).
-  So MeshMonitor, a phone pointed straight at the node, or a second instance of this will
-  fight this one for the link - with dropped messages and a node that never sleeps as the
-  result. Point everything at the virtual node instead. (BLE and USB are separate
-  transports and can be used at the same time.)
+- **No authentication of its own.** Trusted LAN only - see [Security](#security).
+- **One thing may talk to the node at a time.** A node serves a single TCP client, and a
+  new connection force-closes the previous one
+  ([`ServerAPI.h`](https://github.com/meshtastic/firmware/blob/master/src/mesh/api/ServerAPI.h)).
+  MeshMonitor, a phone pointed straight at the node, or a second instance of this will
+  fight this one for the link - dropped messages, and a node that never sleeps. Point
+  everything at 4404 instead. (BLE and USB are separate transports and are unaffected.)
 - **English only.** Dates and numbers follow the browser's locale, the text does not.
-- **Developed against the Android app.** iOS speaks the same protocol but is untested
-  here.
-- It is not a mesh participant: no radio of its own, no channel or key management, and
+- **Developed against the Android app.** iOS speaks the same protocol but is untested.
+- **Not a mesh participant.** No radio of its own, no channel or key management, and
   admin writes from apps are blocked unless you turn them on.
 
 ## Security
 
 Short version, in full in **[docs/security.md](docs/security.md)**:
 
-- The virtual node on 4404 and the web UI on 8080 are **unauthenticated**. Whatever can
-  reach them can read the stored history and send messages to the mesh. Keep them on a
-  trusted network; do not forward them.
+- The virtual node on 4404 and the web UI on 8080 are **unauthenticated**: whatever can
+  reach them can read the history and send to the mesh. Do not forward those ports.
 - The store is a plain SQLite file - message text at rest, not encrypted.
 - Letting apps change the node's settings is off by default (`allow_admin`).
-- Direct messages stay end-to-end encrypted: the one repair this makes to them is the
-  stamp the node itself would have applied.
+- Direct messages stay end-to-end encrypted; the one repair this makes is the stamp the
+  node itself would have applied.
 - Only the basemap needs the internet, and only the browser talks to it.
 
 ## Credits
@@ -131,11 +106,9 @@ Short version, in full in **[docs/security.md](docs/security.md)**:
 This exists because other people published theirs:
 
 - **[Meshtastic firmware](https://github.com/meshtastic/firmware)** - the actual
-  specification of the phone protocol. `PhoneAPI.cpp` answered every question about what
-  a node sends and when.
+  specification of the phone protocol; `PhoneAPI.cpp` answered every question.
 - **[Meshtastic Android app](https://github.com/meshtastic/Meshtastic-Android)** - what a
-  client expects on connect, and the source of the direct-message quirk this works
-  around.
+  client expects on connect, and the source of the DM quirk this works around.
 - **[meshtastic-python](https://github.com/meshtastic/python)** - the upstream TCP link
   and the generated protobufs.
 - **[MeshMonitor](https://github.com/Yeraze/meshmonitor)** by Yeraze - prior art for
@@ -146,26 +119,21 @@ This exists because other people published theirs:
   © [OpenStreetMap](https://www.openstreetmap.org/copyright) data.
 - FastAPI, Uvicorn, Pydantic, Typer, React, Vite, Tailwind CSS and Recharts.
 
-Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software
-components are released under various licenses, see
-[GitHub](https://github.com/meshtastic) for details. No warranty is provided - use
-at your own risk.
-
-This project is not affiliated with or endorsed by the Meshtastic project.
-
-The Meshtastic Powered badge comes from the [Meshtastic design
+Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components
+are released under various licenses, see [GitHub](https://github.com/meshtastic) for
+details. No warranty is provided - use at your own risk. This project is not affiliated
+with or endorsed by the Meshtastic project. The Meshtastic Powered badge comes from the
+[Meshtastic design
 repository](https://github.com/meshtastic/design/tree/master/Meshtastic%20Powered%20Logo)
-(GPL-3.0). It marks technical compatibility and does not imply endorsement or
-sponsorship by the Meshtastic project.
+(GPL-3.0) and marks compatibility, not endorsement.
 
 ## Written by an AI
 
 Every line of code, test and documentation here was written by **Claude Opus 5**
 (Anthropic) in [Claude Code](https://claude.com/claude-code), from prompts and review by
-a human who ran it against real hardware and decided what it should do. Commits carry a
-`Co-Authored-By` trailer naming the model. Read it the way you would read any code from
-a source you do not know yet: the tests pass and it has been running for days on a real
-node, but nobody has audited it line by line.
+a human who ran it against real hardware. Commits carry a `Co-Authored-By` trailer naming
+the model. The tests pass and it has run for days on a real node, but nobody has audited
+it line by line.
 
 ## Development
 
