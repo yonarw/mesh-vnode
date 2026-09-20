@@ -1,0 +1,54 @@
+# Home Assistant add-on manifest.
+#
+# Nothing here is a second source of truth: every option below is a field in
+# src/mesh_vnode/config.py. The Supervisor writes them to
+# /data/options.json and the image reads that through VNODE_CONFIG_FILE, so the
+# add-on carries no translation layer and the standalone service is unchanged.
+#
+# Keep `version` in step with the pushed image tag - the Supervisor pulls
+# <image>:<version>.
+name: Mesh vnode
+slug: mesh_vnode
+version: "0.1.0"
+description: A virtual node that remembers messages, for use with Meshtastic meshes
+url: https://github.com/yonarw/mesh-vnode
+image: ghcr.io/yonarw/mesh-vnode
+arch:
+  - aarch64
+  - amd64
+
+# The image is plain python, not an s6-overlay base, so the Supervisor must not
+# expect an init system inside it.
+init: false
+startup: services
+boot: auto
+
+# The web UI is reached through Home Assistant, which authenticates it. 8080 is
+# deliberately NOT in `ports`: publishing it would put the unauthenticated API
+# on the LAN beside the version ingress is protecting.
+ingress: true
+ingress_port: 8080
+panel_icon: mdi:radio-tower
+panel_title: Mesh vnode
+
+# The phone app speaks raw TCP, which ingress cannot proxy, so this one is a
+# real host port. LAN only - nothing forwards it outward.
+ports:
+  4404/tcp: 4404
+ports_description:
+  4404/tcp: Virtual node. In the Meshtastic app add a node over Network, host = this machine, port 4404. Change the host port here if 4404 is already taken.
+
+options:
+  upstream_host: meshtastic.local
+  upstream_port: 4403
+  allow_admin: false
+  retention_days: 30
+  log_level: INFO
+
+schema:
+  # mDNS does not resolve inside the container; use the node's IP.
+  upstream_host: str
+  upstream_port: port
+  allow_admin: bool
+  retention_days: int(0,3650)
+  log_level: list(DEBUG|INFO|WARNING|ERROR)

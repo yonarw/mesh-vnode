@@ -1,0 +1,21 @@
+services:
+  vnode:
+    build: .
+    image: mesh-vnode:latest
+    container_name: mesh-vnode
+    restart: unless-stopped
+    ports:
+      # Host side only: change VNODE_LISTEN_PORT / VNODE_WEB_PORT (or a .env file)
+      # if these are taken. Inside the container the ports stay the defaults.
+      - "${VNODE_LISTEN_PORT:-4404}:4404"   # the port the Meshtastic app connects to
+      - "${VNODE_WEB_PORT:-8080}:8080"      # web UI
+    volumes:
+      - ./data:/data
+    environment:
+      # The only setting that has to be right.
+      VNODE_UPSTREAM_HOST: "${VNODE_UPSTREAM_HOST:?set this to your node's hostname or IP}"
+      VNODE_UPSTREAM_PORT: "4403"
+      VNODE_REPLAY_MODE: "cursor"
+      VNODE_REPLAY_POSITION: "after_complete"
+      VNODE_RETENTION_DAYS: "30"
+      VNODE_LOG_LEVEL: "INFO"

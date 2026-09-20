@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1120" />
+    <title>mesh-vnode</title>
+    <!-- Relative hrefs on purpose: under Home Assistant ingress the app is
+         served from a token path, so an absolute /icon.png would 404.
+         `use-credentials` because ingress authenticates by cookie and the
+         manifest is otherwise fetched without one. -->
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" crossorigin="use-credentials" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

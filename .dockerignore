@@ -1,0 +1,8 @@
+.git
+.venv
+data
+node_modules
+webui/node_modules
+__pycache__
+.pytest_cache
+.ruff_cache

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+/build/
+/dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.claude/settings.local.json
+
+# Runtime data: the message store, logs, pid file
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
+
+# Web UI: dependencies and build output (start.sh builds it on first run)
+node_modules/
+webui/dist/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# wip
+wip/
+# Local deploy helper (holds the Pi address)
+sync_to_pi.sh

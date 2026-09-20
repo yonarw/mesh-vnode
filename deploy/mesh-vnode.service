@@ -1,0 +1,36 @@
+# Copy to /etc/systemd/system/, edit the paths and the node address, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mesh-vnode
+#
+# Set up the environment first, as the service user, in WorkingDirectory:
+#   uv sync --frozen
+# The service then starts the program uv installed into .venv. It does not go
+# through `uv run`: that may sync the environment on start, and the project
+# directory is read-only to the service (only data/ is writable).
+[Unit]
+Description=mesh-vnode - virtual Meshtastic node with a message store
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pi
+WorkingDirectory=/home/pi/mesh-vnode
+# Only the first start needs it: an address saved in the web UI wins over this.
+Environment=VNODE_UPSTREAM_HOST=meshtastic.local
+Environment=VNODE_DB_PATH=/home/pi/mesh-vnode/data/vnode.sqlite3
+Environment=VNODE_RETENTION_DAYS=30
+# The journal is the log here (journalctl -u mesh-vnode).
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/mesh-vnode/.venv/bin/mesh-vnode run
+Restart=always
+RestartSec=10
+
+# The service needs nothing but its own data directory and the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/mesh-vnode/data
+
+[Install]
+WantedBy=multi-user.target
