@@ -4,8 +4,10 @@ A virtual node that remembers messages, for use with Meshtastic® meshes.
 
 It holds the single TCP connection to your real node, stores every text message
 in SQLite, and presents itself to the Meshtastic phone app as a node on TCP.
-When the app connects it gets the node's config and then the messages it missed,
-so the phone no longer has to hold a socket open all day to avoid losing DMs.
+When the app connects it gets the node's config and then the messages it missed.
+The node keeps its own backlog for a disconnected app, but only 8-32 packets and
+only in RAM; this one is on disk, survives a reboot, and several apps can read it
+at once.
 
 ## Setting it up
 

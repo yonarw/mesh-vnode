@@ -7,8 +7,8 @@ A virtual node that remembers messages, for use with Meshtastic® meshes.
 It sits between your Meshtastic node and the apps that talk to it: it holds the node's
 single TCP connection, stores what it hears in SQLite, and presents itself to the
 Meshtastic phone app as a node on TCP. When the app connects it gets the node's config
-and then the messages it missed - so the phone no longer has to hold a socket open all
-day to avoid losing direct messages.
+and then the messages it missed - so the backlog outlives the node's own short queue,
+and more than one app can read it.
 
 ```
                                      ┌── Meshtastic app   (TCP 4404)
@@ -20,9 +20,12 @@ day to avoid losing direct messages.
 
 The point of it is the store and the socket:
 
-- **No missed messages.** Every stored packet is replayed to an app that has not seen it
-  yet. Each client has its own cursor, so reconnecting does not mean re-reading the same
-  backlog.
+- **A backlog that survives.** The node keeps its own queue for a disconnected app, but
+  it holds 8 packets on a classic ESP32 and 32 on an S3, C3, nRF52 or RP2040, and it
+  lives in RAM - a reboot or a firmware update empties it. This store is on disk and
+  bounded by your retention setting rather than by slots. Each client has its own cursor,
+  so reconnecting replays what *that* client missed, not the backlog someone else
+  already read.
 - **More than one app at a time.** A node serves a single TCP client and a second
   connection takes the link away from the first; the virtual node accepts several and
   multiplexes them onto the one link it holds.
@@ -30,6 +33,26 @@ The point of it is the store and the socket:
   can be narrowed to favourites or switched off, so a phone does not wake for every
   packet on the mesh.
 - **Nothing to operate.** One process, one SQLite file. No broker, no account, no cloud.
+
+### What the node already does
+
+Worth being precise about, because it decides whether you need any of this. A Meshtastic
+node is not careless with messages while your phone is away. In
+[`MeshService::sendToPhone`](https://github.com/meshtastic/firmware/blob/master/src/mesh/MeshService.cpp)
+the queue protects text: when it is full an incoming *text* evicts the oldest entry,
+while an incoming position, telemetry or node-info packet is dropped instead. So a mesh
+with hundreds of chatty nodes does **not** push your direct messages out - a common
+assumption, and a wrong one.
+
+What the node cannot do is keep that backlog deep
+([`MAX_RX_TOPHONE`](https://github.com/meshtastic/firmware/blob/master/src/mesh/mesh-pb-constants.h)
+is 8 or 32 packets), keep it across a reboot (persisting it is declared in the protobuf
+and marked `Not yet implemented FIXME` in `NodeDB.cpp`), or serve more than one app at a
+time
+([`ServerAPI.h`](https://github.com/meshtastic/firmware/blob/master/src/mesh/api/ServerAPI.h)).
+Those three are the gap this fills, and they are the whole of it. If your phone is away
+for an hour at a time and you point a single app at a single node, the firmware on its
+own is very likely enough.
 
 There is also a **web UI** - messages, node list, map with position tracks, telemetry
 graphs - but treat it as a convenience, not the reason to run this. Meshtastic's own web
