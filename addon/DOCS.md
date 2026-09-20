@@ -89,6 +89,18 @@ lease.
 **Upstream never connects.** Almost always `meshtastic.local` in the node
 address. Use the IP.
 
+## More documentation
+
+These live in the repository rather than in the add-on, so they are a click away
+rather than on this tab:
+
+- **[Configuration](https://github.com/yonarw/mesh-vnode/blob/main/docs/configuration.md)** -
+  every setting, what it does, and the handful that exist only in the web UI (⚙).
+- **[Security](https://github.com/yonarw/mesh-vnode/blob/main/docs/security.md)** - what
+  is exposed on which port, and what the message store holds at rest.
+- **[Install](https://github.com/yonarw/mesh-vnode/blob/main/docs/install.md)** - the
+  standalone and Docker Compose modes, if you ever want it off Home Assistant.
+
 ---
 
 Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components are released under various licenses, see [GitHub](https://github.com/meshtastic) for details. No warranty is provided - use at your own risk.
