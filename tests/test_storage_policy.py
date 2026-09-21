@@ -64,6 +64,12 @@ def store(up, pkt):
     return up._store_packet(pkt, fr.SerializeToString())
 
 
+def store_from_client(up, pkt):
+    fr = mesh_pb2.FromRadio()
+    fr.packet.CopyFrom(pkt)
+    return up._store_packet(pkt, fr.SerializeToString(), origin="phone")
+
+
 def test_telemetry_is_kept_for_this_node(up):
     store(up, packet(ME, proto.PORT_TELEMETRY, device_telemetry()))
     assert up.db.counts()["telemetry"] == 1
@@ -95,6 +101,20 @@ def test_every_packet_is_counted_in_traffic(up):
     store(up, packet(FAV, proto.PORT_TEXT, b"yo"))
     counts = {r["portnum"]: r["count"] for r in up.db.traffic(0)}
     assert counts == {proto.PORT_TELEMETRY: 1, proto.PORT_TEXT: 2}
+
+
+def test_a_text_message_marks_the_sender_as_heard(up):
+    """A node that only chats would otherwise look days stale in the node list,
+    while the handshake replayed to the phone said it was heard just now."""
+    pkt = packet(STRANGER, proto.PORT_TEXT, b"hi")
+    store(up, pkt)
+    assert up.db.node(STRANGER)["last_heard"] == pkt.rx_time
+
+
+def test_our_own_outgoing_text_does_not_mark_us_as_heard(up):
+    pkt = packet(ME, proto.PORT_TEXT, b"hi")
+    store_from_client(up, pkt)
+    assert up.db.node(ME)["last_heard"] is None
 
 
 def test_gps_quality_is_recorded_from_this_nodes_position(up):

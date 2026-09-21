@@ -555,6 +555,10 @@ class Upstream:
             # and telemetry may not be forwarded to them at all.
             if from_num:
                 self.db.refresh_node_frame(from_num, packet, int(time.time()))
+                # Anything heard from a node proves it is alive, a text message
+                # as much as a beacon. The port-specific handlers below add
+                # their richer fields on top.
+                self.db.upsert_node(from_num, {"last_heard": rx, "snr": meta["rx_snr"]})
 
         if portnum == proto.PORT_ROUTING:
             routing = proto.decode_routing(packet)
@@ -613,15 +617,6 @@ class Upstream:
                     )
 
         if portnum not in proto.STORED_PORTNUMS:
-            if portnum not in (
-                proto.PORT_NODEINFO,
-                proto.PORT_POSITION,
-                proto.PORT_TELEMETRY,
-                proto.PORT_ROUTING,
-            ):
-                self.db.upsert_node(
-                    from_num, {"last_heard": meta["rx_time"], "snr": meta["rx_snr"]}
-                )
             return None
 
         if origin is None:
