@@ -40,7 +40,8 @@ this fills - if your phone is away an hour at a time and you run one app, the fi
 enough.
 
 There is also a **web UI** - messages, node list, map with position tracks, telemetry
-graphs - but treat it as a convenience; Meshtastic's own web client and
+graphs, and per-node requests (traceroute, position, telemetry, node info, on a channel
+you pick) - but treat it as a convenience; Meshtastic's own web client and
 [MeshMonitor](https://github.com/Yeraze/meshmonitor) are far richer. Where it earns its
 keep is Home Assistant: the add-on rides your existing remote access to HA, so your mesh
 is reachable from outside the house behind the login you already have.
@@ -111,8 +112,8 @@ This exists because other people published theirs:
   client expects on connect, and the source of the DM quirk this works around.
 - **[meshtastic-python](https://github.com/meshtastic/python)** - the upstream TCP link
   and the generated protobufs.
-- **[MeshMonitor](https://github.com/Yeraze/meshmonitor)** by Yeraze - prior art for
-  proxying a node and keeping its history. No code is taken from it.
+- **[MeshMonitor](https://github.com/Yeraze/meshmonitor)** by Yeraze - also has a virtual node and
+  was the main inspiration for this project.
 - **[MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js)** with basemaps from
   **[OpenFreeMap](https://openfreemap.org)** / [OpenMapTiles](https://openmaptiles.org)
   or [CARTO](https://carto.com/basemaps/), on

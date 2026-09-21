@@ -386,6 +386,49 @@ async def test_outgoing_text_is_forwarded_and_stored(running):
     await client.close()
 
 
+async def test_a_traceroute_from_the_app_is_recorded_as_a_request(running):
+    """Being the connection the app talks through is what makes this visible:
+    its answer comes back addressed to our node and lands in the same row."""
+    _, db, upstream, connect = running
+    client = await connect()
+    await client.want_config(1)
+    await client.collect(0.4)
+
+    tr = mesh_pb2.ToRadio()
+    tr.packet.to = 0x11AA22BB
+    tr.packet.id = 778
+    tr.packet.channel = 2
+    tr.packet.decoded.portnum = proto.PORT_TRACEROUTE
+    tr.packet.decoded.want_response = True
+    await client.send(tr)
+    await asyncio.sleep(0.3)
+
+    row = db.exchanges(0x11AA22BB)[0]
+    assert (row["kind"], row["direction"], row["status"]) == ("traceroute", "out", "sent")
+    assert (row["packet_id"], row["channel"]) == (778, 2)
+    assert row["origin"] and row["origin"] != "webui"
+    assert len(upstream.sent) == 1  # and it still went upstream untouched
+    await client.close()
+
+
+async def test_a_plain_message_from_the_app_is_not_a_request(running):
+    _, db, _, connect = running
+    client = await connect()
+    await client.want_config(1)
+    await client.collect(0.4)
+
+    tr = mesh_pb2.ToRadio()
+    tr.packet.to = 0x11AA22BB
+    tr.packet.id = 779
+    tr.packet.decoded.portnum = proto.PORT_TEXT
+    tr.packet.decoded.payload = b"just talking"
+    await client.send(tr)
+    await asyncio.sleep(0.3)
+
+    assert db.exchanges() == []
+    await client.close()
+
+
 async def test_a_clients_own_message_is_not_replayed_back_to_it(running):
     _, _, _, connect = running
     client = await connect()

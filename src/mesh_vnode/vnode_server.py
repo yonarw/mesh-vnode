@@ -311,6 +311,8 @@ class VNodeServer:
         # are what you compare against "did it arrive?".
         logger.info("vnode: %s sent %s", client.peer, proto.describe_packet(pkt))
 
+        await self._note_app_request(client, pkt, portnum)
+
         out = self._apply_from_zero_fix(client, payload, pkt)
 
         if self.settings.store_outgoing:
@@ -326,6 +328,35 @@ class VNodeServer:
                 self.mirror_outgoing(pkt, seq, exclude=client.cid)
 
         await self._send_upstream(out)
+
+    async def _note_app_request(self, client: ClientSession, pkt, portnum: int) -> None:
+        """Record a traceroute or a position/telemetry/node info request an app
+        made through us.
+
+        Being the connection the app talks through is what makes this possible:
+        the answer comes back from the mesh addressed to our node, so it lands
+        in the same exchange row as one the web UI asked for.
+        """
+        kind = proto.exchange_kind(portnum)
+        if kind is None or not proto.is_request(pkt) or pkt.to == proto.BROADCAST_NUM:
+            return
+
+        def store() -> dict[str, Any] | None:
+            row_id = self.db.log_exchange(
+                kind=kind,
+                node_num=pkt.to,
+                direction="out",
+                status="sent",
+                channel=pkt.channel,
+                packet_id=pkt.id,
+                origin=client.key,
+            )
+            row = self.db.exchange(row_id)
+            return dict(row) if row is not None else None
+
+        row = await asyncio.to_thread(store)
+        if row is not None:
+            self._notify("exchange", row)
 
     async def _forward_admin(self, client: ClientSession, pkt, payload: bytes) -> None:
         """Admin messages: reads and node flags pass, anything else is dropped.
@@ -400,8 +431,7 @@ class VNodeServer:
         out = proto.fill_from_if_zero(payload, self.upstream.my_node_num or 0)
         if out is not payload:
             logger.debug(
-                "vnode: stamped node number into packet id=%#010x from %s "
-                "(encryption untouched)",
+                "vnode: stamped node number into packet id=%#010x from %s (encryption untouched)",
                 pkt.id,
                 client.peer,
             )

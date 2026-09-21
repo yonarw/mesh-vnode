@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, useResource, type Node } from "../api";
 import { Empty, Pill, batteryTone, nodeLabel, relTime } from "../ui";
+import NodeSheet from "./NodeSheet";
 
 type Heard = "1h" | "24h" | "7d" | "any";
 type Sort = "heard" | "name" | "snr" | "hops";
@@ -56,6 +57,9 @@ export default function Nodes({
   onShowOnMap: (n: Node) => void;
 }) {
   const { data, loading, refresh } = useResource<Node[]>(() => api.nodes(), [tick]);
+  // The node opened as a card: everything about one node, and where it is
+  // asked for a traceroute or its position.
+  const [opened, setOpened] = useState<Node | null>(null);
   const [filters, setFilters] = useState<Filters>(loadFilters);
   const [shown, setShown] = useState(PAGE);
   // Stars flipped here before the node confirms, keyed by node number.
@@ -114,14 +118,14 @@ export default function Nodes({
           {pinned.length > 0 && (
             <Section title="This node & favourites">
               {pinned.map((n) => (
-                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} busy={n.node_num in pending} />
+                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} onOpen={setOpened} busy={n.node_num in pending} />
               ))}
             </Section>
           )}
           {visibleRest.length > 0 && (
             <Section title={pinned.length ? "Everyone else" : undefined}>
               {visibleRest.map((n) => (
-                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} busy={n.node_num in pending} />
+                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} onOpen={setOpened} busy={n.node_num in pending} />
               ))}
             </Section>
           )}
@@ -134,6 +138,19 @@ export default function Nodes({
             </button>
           )}
         </>
+      )}
+
+      {opened && (
+        <NodeSheet
+          nodeNum={opened.node_num}
+          fallback={{
+            short: opened.short_name,
+            long: opened.long_name,
+            id: opened.node_id,
+          }}
+          tick={tick}
+          onClose={() => setOpened(null)}
+        />
       )}
     </div>
   );
@@ -263,12 +280,14 @@ function NodeRow({
   onStar,
   onMessage,
   onShowOnMap,
+  onOpen,
   busy,
 }: {
   node: Node;
   onStar: (n: Node) => void;
   onMessage: (n: Node) => void;
   onShowOnMap: (n: Node) => void;
+  onOpen: (n: Node) => void;
   busy: boolean;
 }) {
   const hasPosition = n.latitude !== null && n.longitude !== null;
@@ -294,7 +313,13 @@ function NodeRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-sm font-semibold text-mist-200">{nodeLabel(n)}</span>
+          <button
+            onClick={() => onOpen(n)}
+            title="Show this node"
+            className="min-w-0 truncate text-left text-sm font-semibold text-mist-200 hover:text-accent-400"
+          >
+            {nodeLabel(n)}
+          </button>
           <span className="shrink-0 text-[11px] text-mist-400">{relTime(n.last_heard)}</span>
         </div>
         <div className="mt-0.5 truncate font-mono text-[11px] text-mist-400">

@@ -115,6 +115,53 @@ export interface Node {
   tracked: boolean;
 }
 
+/** A traceroute or a position/telemetry/node info request: what was asked of
+ *  one node, and what came back. `direction` is "in" for a question another
+ *  node asked of ours - the node answers those itself, so only the question is
+ *  ever seen. */
+export interface Exchange {
+  id: number;
+  ts: number;
+  kind: "traceroute" | "position" | "telemetry" | "nodeinfo";
+  node_num: number;
+  node: NodeName;
+  direction: "out" | "in";
+  channel: number;
+  packet_id: number;
+  origin: string | null;
+  status: "sent" | "answered" | "failed" | "expired" | "heard";
+  response_ts: number | null;
+  result: ExchangeResult | null;
+  error: string | null;
+}
+
+export interface ExchangeResult {
+  /** Traceroute: the nodes the request passed through, and the SNR of each
+   *  hop in quarter-dB steps already converted; null where unknown. */
+  route?: number[];
+  route_names?: NodeName[];
+  snr_towards?: (number | null)[];
+  route_back?: number[];
+  route_back_names?: NodeName[];
+  snr_back?: (number | null)[];
+  hops?: number | null;
+  /** Position: as stored on the node. */
+  latitude?: number;
+  longitude?: number;
+  altitude?: number | null;
+  /** Telemetry: whichever metrics the node sent. */
+  metric?: string;
+  battery_level?: number;
+  voltage?: number;
+  temperature?: number;
+  relative_humidity?: number;
+  /** Node info. */
+  long_name?: string;
+  short_name?: string;
+  hw_model?: string;
+  role?: string;
+}
+
 export interface TrackPoint {
   time: number;
   latitude: number;
@@ -342,6 +389,18 @@ export const api = {
     return res.json();
   },
   messageDetails: (seq: number) => get<MessageDetails>(`/messages/${seq}`),
+  exchanges: (node?: number, limit = 50) =>
+    get<Exchange[]>(`/exchanges?limit=${limit}${node === undefined ? "" : `&node=${node}`}`),
+  /** Ask one node for something. The answer arrives later, through the socket. */
+  exchange: async (body: { kind: Exchange["kind"]; node: number; channel: number }) => {
+    const res = await fetch(`${API}/exchange`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return (await res.json()) as Exchange;
+  },
   prefs: () => get<Prefs>("/prefs"),
   track: (nodeNum: number, hours = 24 * 7) => get<TrackPoint[]>(`/nodes/${nodeNum}/track?hours=${hours}`),
   savePrefs: async (patch: PrefsPatch) => {

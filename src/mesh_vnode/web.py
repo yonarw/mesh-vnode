@@ -1,8 +1,9 @@
 """HTTP/WebSocket API plus the static web UI.
 
-Read-mostly: the UI shows what the store already knows. The one write path is
+Read-mostly: the UI shows what the store already knows. The write paths are
 `POST /api/send`, which is there so the whole upstream send path can be exercised
-without a phone.
+without a phone, and `POST /api/exchange`, which asks one node for a traceroute,
+its position, its telemetry or its node info.
 """
 
 from __future__ import annotations
@@ -31,6 +32,15 @@ logger = logging.getLogger(__name__)
 
 WEBUI_DIST = Path(__file__).resolve().parent.parent.parent / "webui" / "dist"
 
+# How long a request may stay open before it is written off. A traceroute is
+# slow by nature: every hop repeats it, and the answer walks the same way back.
+EXCHANGE_TIMEOUTS = {"traceroute": 180, "position": 90, "telemetry": 90, "nodeinfo": 90}
+# One request per node and kind per half minute. The firmware does not limit
+# what comes in over the phone API - its own traceroute cooldown guards the
+# device's screen menu only - so this is the only thing standing between a
+# held-down button and a node's airtime.
+EXCHANGE_COOLDOWN_S = 30
+
 
 def _rows(rows) -> list[dict[str, Any]]:
     out = []
@@ -51,6 +61,15 @@ class SendRequest(BaseModel):
     # see Upstream.send_text.
     reply_id: int | None = None
     emoji: bool = False
+
+
+class ExchangeRequest(BaseModel):
+    kind: Literal["traceroute", "position", "telemetry", "nodeinfo"]
+    node: int
+    # Which channel's key encrypts the request. The phone apps always use the
+    # primary; a node that does not have the channel picked here cannot read
+    # the question and will not answer.
+    channel: int = Field(0, ge=0, le=7)
 
 
 class FavoriteRequest(BaseModel):
@@ -401,6 +420,56 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
     @api.get("/api/events")
     def events(limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
         return _rows(db.events(limit))
+
+    # -------------------------------------------------------------- exchanges
+
+    def _exchange_view(rows: list[sqlite3.Row], names: dict[int, Any]) -> list[dict[str, Any]]:
+        out = []
+        for row in _rows(rows):
+            row["result"] = json.loads(row["result"]) if row["result"] else None
+            row["node"] = _label(names, row["node_num"])
+            if row["kind"] == "traceroute" and row["result"]:
+                for key in ("route", "route_back"):
+                    row["result"][f"{key}_names"] = [
+                        _label(names, num) for num in row["result"].get(key, [])
+                    ]
+            out.append(row)
+        return out
+
+    @api.get("/api/exchanges")
+    def exchanges(
+        node: int | None = None,
+        limit: int = Query(50, ge=1, le=500),
+    ) -> list[dict[str, Any]]:
+        """Traceroutes and position/telemetry/node info requests, newest first.
+
+        Requests nothing answered in time are written off here rather than on a
+        timer: a row only has to look finished by the time somebody reads it.
+        """
+        db.expire_exchanges(EXCHANGE_TIMEOUTS)
+        return _exchange_view(db.exchanges(node, limit=limit), _names())
+
+    @api.post("/api/exchange")
+    async def exchange(req: ExchangeRequest) -> dict[str, Any]:
+        if not vnode.upstream.connected.is_set():
+            raise HTTPException(503, "upstream node not connected")
+        my_num = vnode.upstream.my_node_num
+        if req.node == my_num:
+            raise HTTPException(400, "that is this node")
+        last = db.last_exchange_ts(req.kind, req.node)
+        if last is not None and time.time() - last < EXCHANGE_COOLDOWN_S:
+            wait = int(EXCHANGE_COOLDOWN_S - (time.time() - last)) + 1
+            raise HTTPException(429, f"just asked - try again in {wait}s")
+        try:
+            row = await asyncio.to_thread(
+                vnode.upstream.send_request,
+                req.kind,
+                req.node,
+                channel_index=req.channel,
+            )
+        except Exception as exc:
+            raise HTTPException(502, f"request failed: {exc}") from exc
+        return _exchange_view([row], _names())[0]
 
     # ------------------------------------------------------------------ prefs
 

@@ -17,6 +17,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 from meshtastic.protobuf import config_pb2, mesh_pb2
 from meshtastic.tcp_interface import TCPInterface
@@ -443,6 +444,74 @@ class Upstream:
             publicKey=public_key,
         )
 
+    def send_request(
+        self,
+        kind: str,
+        node_num: int,
+        *,
+        channel_index: int = 0,
+        origin: str = "webui",
+    ) -> dict[str, Any]:
+        """Ask one node for something: a traceroute, or its position, telemetry
+        or node info.
+
+        The request goes out with want_response set and nothing waits for the
+        answer - it arrives from the mesh like any other packet, minutes later
+        for a traceroute across several hops, and is matched back to this row
+        by its request_id. Blocking only for as long as the send takes; call
+        from a thread. Returns the stored row.
+        """
+        iface = self.iface
+        if iface is None:
+            raise RuntimeError("upstream not connected")
+        port = proto.EXCHANGE_PORTS.get(kind)
+        if port is None:
+            raise ValueError(f"unknown exchange kind: {kind}")
+        my_num = self.my_node_num
+        me = self.db.node(my_num) if my_num else None
+        packet = iface.sendData(
+            proto.request_payload(kind, me=dict(me) if me is not None else None),
+            destinationId=node_num,
+            portNum=port,
+            wantResponse=True,
+            channelIndex=channel_index,
+            hopLimit=self._hop_limit(node_num),
+        )
+        row_id = self.db.log_exchange(
+            kind=kind,
+            node_num=node_num,
+            direction="out",
+            status="sent",
+            channel=channel_index,
+            packet_id=packet.id,
+            origin=origin,
+        )
+        logger.info(
+            "vnode: asked %s for %s on channel %d (id=%#010x, from %s)",
+            proto.node_id(node_num),
+            kind,
+            channel_index,
+            packet.id,
+            origin,
+        )
+        row = self.db.exchange(row_id)
+        stored = dict(row) if row is not None else {}
+        self._emit_event("exchange", stored)
+        return stored
+
+    def _hop_limit(self, node_num: int) -> int | None:
+        """Just far enough to reach the node, where we know how far that is.
+
+        A traceroute at the node's full hop limit is repeated by everyone in
+        range at every hop; asking a direct neighbour with 7 hops of budget is
+        a lot of other people's airtime for one answer.
+        """
+        row = self.db.node(node_num)
+        hops = row["hops_away"] if row is not None else None
+        if hops is None:
+            return None
+        return max(1, min(int(hops) + 1, 7))
+
     # ---------------------------------------------------------------- sinks
 
     def _emit_state(self, state: str, detail: str) -> None:
@@ -564,6 +633,9 @@ class Upstream:
             routing = proto.decode_routing(packet)
             if routing is not None and self.my_node_num:
                 request_id, error = routing
+                if self._routing_for_exchange(request_id, error):
+                    # It answers a request, not a message: no delivery log.
+                    return None
                 status, detail = proto.delivery_status(from_num, self.my_node_num, error)
                 if status == "failed":
                     event = "nak"
@@ -616,6 +688,9 @@ class Upstream:
                         },
                     )
 
+        if origin is None and from_num != self.my_node_num:
+            self._note_exchange(packet, meta)
+
         if portnum not in proto.STORED_PORTNUMS:
             return None
 
@@ -632,6 +707,69 @@ class Upstream:
         else:
             logger.debug("vnode: stored seq=%d %s", seq, proto.describe_packet(packet))
         return seq
+
+    # --------------------------------------------------------------- requests
+
+    def _note_exchange(self, packet: mesh_pb2.MeshPacket, meta: dict) -> None:
+        """File a packet that belongs to a request: either the answer to one we
+        or a connected app sent, or a question another node asked of our node.
+
+        Our node answers an incoming request by itself and does not report what
+        it replied, so an inbound row records the question alone.
+        """
+        kind = proto.exchange_kind(meta["portnum"])
+        if kind is None:
+            return
+        from_num = meta["from_num"]
+        request_id = packet.decoded.request_id if packet.HasField("decoded") else 0
+        pending = self.db.open_exchange(request_id)
+        if pending is not None:
+            row = self.db.resolve_exchange(
+                pending["id"], status="answered", result=proto.exchange_result(kind, packet)
+            )
+            logger.info(
+                "vnode: %s answered the %s request (id=%#010x)",
+                proto.node_id(from_num),
+                kind,
+                request_id,
+            )
+            if row is not None:
+                self._emit_event("exchange", dict(row))
+            return
+
+        if proto.is_request(packet) and meta["to_num"] == self.my_node_num:
+            row_id = self.db.log_exchange(
+                kind=kind,
+                node_num=from_num,
+                direction="in",
+                status="heard",
+                channel=meta["channel"],
+                packet_id=meta["packet_id"],
+                ts=meta["rx_time"] or int(time.time()),
+            )
+            logger.info("vnode: %s asked this node for %s", proto.node_id(from_num), kind)
+            row = self.db.exchange(row_id)
+            if row is not None:
+                self._emit_event("exchange", dict(row))
+
+    def _routing_for_exchange(self, request_id: int, error: str) -> bool:
+        """Whether a routing packet answers an open request. A plain ack only
+        says the question reached the mesh, so the request stays open until the
+        answer itself arrives; an error ends it."""
+        pending = self.db.open_exchange(request_id)
+        if pending is None:
+            return False
+        if error != "NONE":
+            row = self.db.resolve_exchange(pending["id"], status="failed", error=error)
+            logger.info(
+                "vnode: the %s request to %s failed: %s",
+                pending["kind"],
+                proto.node_id(pending["node_num"]),
+                error,
+            )
+            if row is not None:
+                self._emit_event("exchange", dict(row))
+        return True
 
     # ------------------------------------------------------------- favourites
 

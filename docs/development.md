@@ -52,6 +52,12 @@ uv run mesh-vnode probe --seconds 6         # terminal 3, run it twice
 The second `probe` run should show far fewer messages than the first. That is the
 per-client cursor working.
 
+The fake node also answers what it is asked: a traceroute comes back over a relay with
+per-hop SNR, and position, telemetry and node info requests are answered by the three
+chatty peers but never by the crowd, so the "no answer" case can be seen too. It asks
+this node for something itself now and then, which is what an inbound request looks like
+in the node card.
+
 ## Web UI
 
 The Python process serves `webui/dist` when that directory exists, so a build is needed

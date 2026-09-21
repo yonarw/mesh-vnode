@@ -444,6 +444,7 @@ function ClearDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
     [n("positions"), "points of position tracks shown on the map"],
     [n("traffic"), "hourly traffic counts - the \"Mesh traffic heard per hour\" chart"],
     [n("delivery_log"), "delivery reports for messages you sent (who acked, who repeated)"],
+    [n("exchanges"), "traceroutes and position, telemetry and node info requests"],
     [n("events"), "entries in the event log on the Status page"],
     [n("clients"), "known apps, with their replay positions"],
   ];

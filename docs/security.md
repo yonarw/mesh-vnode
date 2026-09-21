@@ -14,8 +14,9 @@ somewhere else. What follows is the honest list.
 
 Neither asks for a password, exactly like the node's own port 4403. Whatever reaches
 them can read the entire stored history, see your node list and positions, and **send
-messages to the mesh as your node**. `POST /api/clear` deletes the store,
-`PUT /api/prefs` changes settings.
+messages to the mesh as your node**. `POST /api/exchange` also makes it transmit in your
+name - a traceroute or a position, telemetry or node info request, which costs everyone
+in range airtime. `POST /api/clear` deletes the store, `PUT /api/prefs` changes settings.
 
 - Keep both on a trusted network. **Do not port-forward them**, and do not put them on a
   guest or IoT VLAN you consider hostile.

@@ -7,6 +7,7 @@ synthesise itself (config_complete, queue status).
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from meshtastic.protobuf import admin_pb2, config_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
@@ -19,6 +20,19 @@ PORT_NODEINFO = portnums_pb2.PortNum.NODEINFO_APP  # 4
 PORT_ROUTING = portnums_pb2.PortNum.ROUTING_APP  # 5
 PORT_ADMIN = portnums_pb2.PortNum.ADMIN_APP  # 6
 PORT_TELEMETRY = portnums_pb2.PortNum.TELEMETRY_APP  # 67
+PORT_TRACEROUTE = portnums_pb2.PortNum.TRACEROUTE_APP  # 70
+
+# The ports that carry a question rather than a statement: sent with
+# want_response set, the receiving node answers on the same port. Everything
+# here can be asked of one node from the web UI, and recognised when another
+# node asks it of ours.
+EXCHANGE_PORTS = {
+    "traceroute": PORT_TRACEROUTE,
+    "position": PORT_POSITION,
+    "telemetry": PORT_TELEMETRY,
+    "nodeinfo": PORT_NODEINFO,
+}
+EXCHANGE_KINDS = tuple(EXCHANGE_PORTS)
 
 # Ports whose raw packets are kept. Only text: it is what gets replayed, and on
 # a busy mesh everything else is noise. A real node here heard ~75 position and
@@ -362,6 +376,118 @@ def delivery_status(ack_from: int, my_num: int, error: str) -> tuple[str, str | 
     if ack_from in (0, my_num):
         return "relayed", None
     return "delivered", None
+
+
+# ---------------------------------------------------------------- exchanges
+
+# An unknown SNR in a RouteDiscovery, in the same 1/4 dB units as the rest.
+SNR_UNKNOWN = -128
+
+
+def exchange_kind(portnum: int) -> str | None:
+    """Which exchange a port belongs to, or None for anything else."""
+    for kind, port in EXCHANGE_PORTS.items():
+        if portnum == port:
+            return kind
+    return None
+
+
+def request_payload(kind: str, *, me: dict[str, Any] | None = None) -> bytes:
+    """The payload that asks a node for something.
+
+    Position and node info are exchanges rather than plain questions: the phone
+    apps send their own position or user with want_response set, and the other
+    node answers with its own. `me` is our node's row, so we send what it knows
+    about itself; an empty payload still works if we know nothing yet.
+    """
+    if kind == "traceroute":
+        return mesh_pb2.RouteDiscovery().SerializeToString()
+    if kind == "telemetry":
+        # No local metrics attached: the question is what the other node has.
+        return telemetry_pb2.Telemetry().SerializeToString()
+    if kind == "position":
+        pos = mesh_pb2.Position()
+        if me and me.get("latitude") is not None and me.get("longitude") is not None:
+            pos.latitude_i = int(me["latitude"] / 1e-7)
+            pos.longitude_i = int(me["longitude"] / 1e-7)
+            if me.get("altitude") is not None:
+                pos.altitude = int(me["altitude"])
+            if me.get("precision_bits"):
+                pos.precision_bits = int(me["precision_bits"])
+        return pos.SerializeToString()
+    if kind == "nodeinfo":
+        user = mesh_pb2.User()
+        if me:
+            user.id = me.get("node_id") or node_id(me.get("node_num", 0))
+            user.long_name = me.get("long_name") or ""
+            user.short_name = me.get("short_name") or ""
+            if me.get("hw_model"):
+                # The name came from this enum in the first place, but a node
+                # stored by an older protobuf may name a model we cannot map.
+                with contextlib.suppress(ValueError):
+                    user.hw_model = mesh_pb2.HardwareModel.Value(me["hw_model"])
+            if me.get("public_key"):
+                user.public_key = bytes(me["public_key"])
+        return user.SerializeToString()
+    raise ValueError(f"unknown exchange kind: {kind}")
+
+
+def _snr_list(values: Any) -> list[float | None]:
+    """RouteDiscovery SNRs travel in 1/4 dB, with -128 meaning "not known"."""
+    return [None if v == SNR_UNKNOWN else v / 4 for v in values]
+
+
+def decode_route_discovery(packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None:
+    """The route a traceroute answer carries.
+
+    `route` is the path the request took towards the destination and
+    `route_back` the path the answer took home; they usually mirror each other
+    but need not. Each SNR list has one more entry than its route: the last one
+    is the final hop into the node that reports it.
+    """
+    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_TRACEROUTE:
+        return None
+    rd = mesh_pb2.RouteDiscovery()
+    try:
+        rd.ParseFromString(packet.decoded.payload)
+    except Exception:
+        return None
+    return {
+        "route": list(rd.route),
+        "snr_towards": _snr_list(rd.snr_towards),
+        "route_back": list(rd.route_back),
+        "snr_back": _snr_list(rd.snr_back),
+        "hops": packet.hop_start - packet.hop_limit if packet.hop_start else None,
+    }
+
+
+def is_request(packet: mesh_pb2.MeshPacket) -> bool:
+    """Does this packet ask for an answer? Set on the question, never on the
+    answer, so it tells the two apart on the same port."""
+    return packet.HasField("decoded") and bool(packet.decoded.want_response)
+
+
+def exchange_result(kind: str, packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None:
+    """What an answer says, decoded for storage. The node tables are updated
+    from the same packet elsewhere; this is the copy kept with the request."""
+    if kind == "traceroute":
+        return decode_route_discovery(packet)
+    if kind == "position":
+        pos = decode_position(packet)
+        return position_fields(pos) if pos is not None else None
+    if kind == "telemetry":
+        tel = decode_telemetry(packet)
+        if tel is None:
+            return None
+        metric, values = tel
+        return {"metric": metric, **{k: v for k, v in values.items() if v is not None}}
+    if kind == "nodeinfo":
+        info = decode_nodeinfo(packet)
+        if info is None:
+            return None
+        # The key is bytes and of no use in a JSON blob the web UI reads.
+        return {k: v for k, v in info.items() if k != "public_key" and v is not None}
+    return None
 
 
 # ------------------------------------------------------------ app forwarding

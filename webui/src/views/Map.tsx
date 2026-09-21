@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, useResource, type MapProvider, type MapStyle, type Node, type TrackPoint } from "../api";
 import { usePrefs } from "../prefs";
 import { Empty, nodeLabel, relTime } from "../ui";
+import NodeSheet from "./NodeSheet";
 
 type Heard = "24h" | "7d" | "any";
 const HEARD_SECONDS: Record<Heard, number | null> = { "24h": 86400, "7d": 604800, any: null };
@@ -224,6 +225,9 @@ export default function MapView({
     }
   });
   const [selected, setSelected] = useState<number | null>(focus);
+  // The full card over the map, where the node can also be asked for a
+  // traceroute or a fresh position.
+  const [details, setDetails] = useState<Node | null>(null);
   const [track, setTrack] = useState<TrackPoint[] | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -492,7 +496,24 @@ export default function MapView({
           </div>
         )}
         {/* Bottom left: the bottom right is where the basemap attribution (i) sits. */}
-        {sel && <NodeCard node={sel} track={shownTrack} span={span} onClose={() => setSelected(null)} onMessage={onMessage} />}
+        {sel && (
+          <NodeCard
+            node={sel}
+            track={shownTrack}
+            span={span}
+            onClose={() => setSelected(null)}
+            onMessage={onMessage}
+            onDetails={setDetails}
+          />
+        )}
+        {details && (
+          <NodeSheet
+            nodeNum={details.node_num}
+            fallback={{ short: details.short_name, long: details.long_name, id: details.node_id }}
+            tick={tick}
+            onClose={() => setDetails(null)}
+          />
+        )}
       </div>
       <p className="hidden px-1 text-[11px] text-mist-400 sm:block">
         <span className="text-accent-400">●</span> this node · <span className="text-warn-400">●</span> favourites ·{" "}
@@ -509,6 +530,7 @@ function NodeCard({
   span,
   onClose,
   onMessage,
+  onDetails,
 }: {
   node: Node;
   /** Already cut down to `span`. */
@@ -516,6 +538,7 @@ function NodeCard({
   span: Span;
   onClose: () => void;
   onMessage: (n: Node) => void;
+  onDetails: (n: Node) => void;
 }) {
   const r = precisionMeters(n.precision_bits);
   const precision =
@@ -561,14 +584,22 @@ function NodeCard({
           </div>
         )}
       </div>
-      {!n.is_local && (
+      <div className="mt-2 flex flex-wrap gap-2">
+        {!n.is_local && (
+          <button
+            onClick={() => onMessage(n)}
+            className="rounded-full border border-accent-400/40 bg-accent-400/10 px-3 py-1 text-[11px] font-semibold text-accent-400"
+          >
+            Message
+          </button>
+        )}
         <button
-          onClick={() => onMessage(n)}
-          className="mt-2 rounded-full border border-accent-400/40 bg-accent-400/10 px-3 py-1 text-[11px] font-semibold text-accent-400"
+          onClick={() => onDetails(n)}
+          className="rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-[11px] font-semibold text-mist-200"
         >
-          Message
+          Details
         </button>
-      )}
+      </div>
     </div>
   );
 }

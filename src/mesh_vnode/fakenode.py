@@ -211,6 +211,8 @@ class FakeNode:
                         await writer.drain()
                         if tr.packet.want_ack and tr.packet.decoded.portnum == 1:
                             asyncio.create_task(self._answer(writer, tr.packet))
+                        elif tr.packet.HasField("decoded") and tr.packet.decoded.want_response:
+                            asyncio.create_task(self._answer_request(writer, tr.packet))
         except Exception as exc:
             logger.debug("fakenode: client error %s", exc)
         finally:
@@ -262,6 +264,70 @@ class FakeNode:
                 writer.write(encode_frame(frame))
                 await writer.drain()
             await asyncio.sleep(0.5)
+
+    async def _answer_request(
+        self, writer: asyncio.StreamWriter, packet: mesh_pb2.MeshPacket
+    ) -> None:
+        """What a node does when asked something: a traceroute, its position,
+        its telemetry or its node info comes back, slowly and over a relay.
+
+        A node in the crowd never answers, so the "no answer" case can be seen
+        too.
+        """
+        port = packet.decoded.portnum
+        peers = {num for num, *_ in PEERS}
+        if packet.to not in peers:
+            return
+        await asyncio.sleep(3 if port == 70 else 1.5)
+
+        fr = mesh_pb2.FromRadio()
+        pkt = fr.packet
+        pkt.__setattr__("from", packet.to)
+        pkt.to = MY_NUM
+        pkt.id = next(self._ids)
+        pkt.rx_time = int(time.time())
+        pkt.rx_snr = round(random.uniform(-5, 9), 2)
+        pkt.hop_start = 3
+        pkt.hop_limit = 2
+        pkt.decoded.portnum = port
+        pkt.decoded.request_id = packet.id
+
+        if port == 70:  # traceroute
+            relay = next(num for num, *_ in PEERS if num != packet.to)
+            rd = mesh_pb2.RouteDiscovery()
+            rd.route.append(relay)
+            rd.snr_towards.extend([random.randint(-20, 40), random.randint(-20, 40)])
+            rd.route_back.append(relay)
+            rd.snr_back.extend([random.randint(-20, 40), -128])
+            pkt.decoded.payload = rd.SerializeToString()
+        elif port == 3:  # position
+            pos = mesh_pb2.Position()
+            pos.latitude_i = int((52.52 + random.uniform(-0.05, 0.05)) / 1e-7)
+            pos.longitude_i = int((13.40 + random.uniform(-0.05, 0.05)) / 1e-7)
+            pos.altitude = random.randint(30, 120)
+            pos.time = int(time.time())
+            pos.precision_bits = 32
+            pkt.decoded.payload = pos.SerializeToString()
+        elif port == 67:  # telemetry
+            tel = telemetry_pb2.Telemetry()
+            tel.time = int(time.time())
+            tel.device_metrics.battery_level = random.randint(40, 100)
+            tel.device_metrics.voltage = round(random.uniform(3.5, 4.2), 2)
+            tel.device_metrics.channel_utilization = round(random.uniform(1, 15), 2)
+            tel.device_metrics.air_util_tx = round(random.uniform(0.1, 4), 2)
+            pkt.decoded.payload = tel.SerializeToString()
+        elif port == 4:  # node info
+            num, nid, long, short = next(p for p in PEERS if p[0] == packet.to)
+            user = mesh_pb2.User(id=nid, long_name=long, short_name=short)
+            user.hw_model = mesh_pb2.HardwareModel.TBEAM
+            pkt.decoded.payload = user.SerializeToString()
+        else:
+            return
+
+        logger.info("fakenode: answering the %s request from %08x", port, MY_NUM)
+        with contextlib.suppress(Exception):
+            writer.write(encode_frame(fr.SerializeToString()))
+            await writer.drain()
 
     def _routing(self, frm: int, request_id: int, error: int, relay_node: int = 0) -> bytes:
         fr = mesh_pb2.FromRadio()
@@ -329,6 +395,22 @@ class FakeNode:
             tel.device_metrics.air_util_tx = round(random.uniform(0, 10), 2)
             tel.device_metrics.uptime_seconds = counter * 60
             pkt.decoded.payload = tel.SerializeToString()
+            out.append(fr.SerializeToString())
+
+        # Now and then somebody asks this node something. The firmware answers
+        # by itself and never reports what it replied, so only the question is
+        # ever seen - which is exactly what the web UI shows.
+        if counter % 4 == 0:
+            asker, _, _, _ = random.choice(PEERS)
+            fr = mesh_pb2.FromRadio()
+            pkt = fr.packet
+            pkt.__setattr__("from", asker)
+            pkt.to = MY_NUM
+            pkt.id = next(self._ids)
+            pkt.rx_time = int(time.time())
+            pkt.rx_snr = round(random.uniform(-8, 9), 2)
+            pkt.decoded.portnum = random.choice([70, 3, 67])
+            pkt.decoded.want_response = True
             out.append(fr.SerializeToString())
 
         # Position chatter from the crowd: counted in traffic, never stored.

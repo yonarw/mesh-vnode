@@ -24,7 +24,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -166,6 +166,28 @@ CREATE TABLE IF NOT EXISTS positions (
     precision_bits INTEGER,
     PRIMARY KEY (node_num, time)
 );
+
+-- Requests that ask a node for something rather than telling it something:
+-- a traceroute, or a position/telemetry/node info exchange. One row per
+-- request, filled in when the answer arrives. `direction` is out for what we
+-- or a connected app asked, in for what another node asked of our node - the
+-- firmware answers those itself, so we only ever see the question.
+CREATE TABLE IF NOT EXISTS exchanges (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,     -- traceroute | position | telemetry | nodeinfo
+    node_num    INTEGER NOT NULL,  -- the node at the other end
+    direction   TEXT NOT NULL,     -- out | in
+    channel     INTEGER NOT NULL DEFAULT 0,
+    packet_id   INTEGER NOT NULL DEFAULT 0,
+    origin      TEXT,              -- webui, or the client key of the app that asked
+    status      TEXT NOT NULL,     -- sent | answered | failed | expired | heard
+    response_ts INTEGER,
+    result      TEXT,              -- JSON: the route, position or metrics that came back
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS exchanges_node ON exchanges(node_num, ts);
+CREATE INDEX IF NOT EXISTS exchanges_open ON exchanges(status, packet_id);
 
 -- Settings made in the web UI (node address, map key, muted conversations,
 -- telemetry layout). JSON values. They override the VNODE_* environment, and
@@ -466,6 +488,7 @@ class Database:
         self._exec("DELETE FROM traffic WHERE hour < ?", (cutoff,))
         self._exec("DELETE FROM delivery_log WHERE ts < ?", (cutoff,))
         self._exec("DELETE FROM positions WHERE time < ?", (cutoff,))
+        self._exec("DELETE FROM exchanges WHERE ts < ?", (cutoff,))
         return n
 
     CLEARED_TABLES = (
@@ -477,6 +500,7 @@ class Database:
         "delivery_log",
         "events",
         "clients",
+        "exchanges",
     )
 
     def clear_preview(self) -> dict[str, int]:
@@ -846,6 +870,112 @@ class Database:
     def packet(self, seq: int) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM packets WHERE seq = ?", (seq,))
         return rows[0] if rows else None
+
+    # -------------------------------------------------------------- exchanges
+
+    def log_exchange(
+        self,
+        *,
+        kind: str,
+        node_num: int,
+        direction: str,
+        status: str,
+        channel: int = 0,
+        packet_id: int = 0,
+        origin: str | None = None,
+        ts: int | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> int:
+        cur = self._exec(
+            "INSERT INTO exchanges(ts, kind, node_num, direction, channel, packet_id, "
+            "origin, status, result) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                ts or _now(),
+                kind,
+                node_num,
+                direction,
+                channel,
+                packet_id,
+                origin,
+                status,
+                json.dumps(result) if result else None,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    def open_exchange(self, packet_id: int) -> sqlite3.Row | None:
+        """The request a response with this request_id belongs to, if it is
+        still waiting for one."""
+        if not packet_id:
+            return None
+        rows = self._query(
+            "SELECT * FROM exchanges WHERE packet_id = ? AND direction = 'out' "
+            "AND status IN ('sent', 'failed') ORDER BY id DESC LIMIT 1",
+            (packet_id,),
+        )
+        return rows[0] if rows else None
+
+    def resolve_exchange(
+        self,
+        exchange_id: int,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> sqlite3.Row | None:
+        """Close a request off with what came back. Returns the finished row."""
+        self._exec(
+            "UPDATE exchanges SET status = ?, response_ts = ?, result = COALESCE(?, result), "
+            "error = ? WHERE id = ?",
+            (status, _now(), json.dumps(result) if result else None, error, exchange_id),
+        )
+        rows = self._query("SELECT * FROM exchanges WHERE id = ?", (exchange_id,))
+        return rows[0] if rows else None
+
+    def expire_exchanges(self, timeouts: dict[str, int], default: int = 60) -> int:
+        """Give up on requests nothing answered. An answer can still arrive
+        later - a traceroute crawls back hop by hop - and resolve_exchange
+        accepts it, so this only stops the UI showing a spinner forever."""
+        cases = " ".join("WHEN ? THEN ?" for _ in timeouts)
+        params: list[Any] = [_now()]
+        for kind, seconds in timeouts.items():
+            params.extend([kind, int(seconds)])
+        params.append(int(default))
+        return self._exec(
+            "UPDATE exchanges SET status = 'expired' WHERE status = 'sent' "
+            f"AND ? - ts > CASE kind {cases} ELSE ? END",
+            params,
+        ).rowcount
+
+    def exchanges(
+        self, node_num: int | None = None, *, limit: int = 50, since: int | None = None
+    ) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM exchanges"
+        params: list[Any] = []
+        where = []
+        if node_num is not None:
+            where.append("node_num = ?")
+            params.append(node_num)
+        if since is not None:
+            where.append("ts >= ?")
+            params.append(since)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(limit)
+        return self._query(sql, params)
+
+    def exchange(self, exchange_id: int) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM exchanges WHERE id = ?", (exchange_id,))
+        return rows[0] if rows else None
+
+    def last_exchange_ts(self, kind: str, node_num: int) -> int | None:
+        rows = self._query(
+            "SELECT MAX(ts) AS ts FROM exchanges WHERE kind = ? AND node_num = ? "
+            "AND direction = 'out'",
+            (kind, node_num),
+        )
+        return rows[0]["ts"] if rows and rows[0]["ts"] else None
 
     # ------------------------------------------------------------------ prefs
 

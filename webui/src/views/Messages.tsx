@@ -6,12 +6,14 @@ import {
   type Conversations,
   type DeliveryEvent,
   type DeliveryStatus,
+  type Exchange,
   type Message,
   type MessageDetails,
   type NodeName,
 } from "../api";
 import { convKey, usePrefs } from "../prefs";
 import { Empty, Pill, clockTime, dayLabel } from "../ui";
+import NodeSheet, { exchangeLine } from "./NodeSheet";
 
 // The tapbacks the Meshtastic phone apps offer, in their order. Staying with
 // this set means a reaction sent here renders as a tapback there rather than
@@ -58,6 +60,10 @@ export default function Messages({
   const convos = useResource<Conversations>(() => api.conversations(), [tick]);
   const [target, setTarget] = useState<Target | null>(() => requested ?? loadLast());
   const [details, setDetails] = useState<number | null>(null);
+  // A node opened from a name or a reaction in the thread, shown as a card.
+  const [nodeCard, setNodeCard] = useState<{ num: number; name: NodeName } | null>(null);
+
+  const openNode = useCallback((num: number, name: NodeName) => setNodeCard({ num, name }), []);
 
   useEffect(() => {
     if (requested) setTarget(requested);
@@ -87,6 +93,14 @@ export default function Messages({
     [target?.kind, target?.kind === "channel" ? target.index : target?.node, tick],
   );
 
+  // Traceroutes and the like are not messages, but they happened between the
+  // two of us and belong on the same timeline. Only in a direct conversation:
+  // a request is always addressed to one node.
+  const exchanges = useResource<Exchange[]>(
+    () => (target?.kind === "dm" ? api.exchanges(target.node, 50) : Promise.resolve([])),
+    [target?.kind, target?.kind === "dm" ? target.node : null, tick],
+  );
+
   // A reaction is a normal send: the emoji is the payload and reply_id names
   // the message. Refresh rather than patch locally - the reaction comes back
   // through the same store as everyone else's.
@@ -110,13 +124,23 @@ export default function Messages({
       {named && <ThreadHeader target={named} channels={convos.data?.channels ?? []} />}
       <Thread
         messages={messages.data ?? []}
+        exchanges={exchanges.data ?? []}
         myNodeNum={myNodeNum}
         loading={messages.loading}
         onDetails={setDetails}
         onReact={react}
+        onOpenNode={openNode}
       />
       {named && <Composer target={named} onSent={() => void messages.refresh()} />}
       {details !== null && <DetailsSheet seq={details} tick={tick} myNodeNum={myNodeNum} onClose={() => setDetails(null)} />}
+      {nodeCard && (
+        <NodeSheet
+          nodeNum={nodeCard.num}
+          fallback={nodeCard.name}
+          tick={tick}
+          onClose={() => setNodeCard(null)}
+        />
+      )}
     </div>
   );
 }
@@ -291,16 +315,20 @@ function ChannelInfo({ channel: c }: { channel: Channel }) {
 
 function Thread({
   messages,
+  exchanges,
   myNodeNum,
   loading,
   onDetails,
   onReact,
+  onOpenNode,
 }: {
   messages: Message[];
+  exchanges: Exchange[];
   myNodeNum: number | null;
   loading: boolean;
   onDetails: (seq: number) => void;
   onReact: (message: Message, emoji: string) => Promise<void>;
+  onOpenNode: (num: number, name: NodeName) => void;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -308,17 +336,21 @@ function Thread({
   }, [messages]);
 
   const grouped = useMemo(() => {
-    const out: { day: string; items: Message[] }[] = [];
-    for (const m of messages) {
-      const day = dayLabel(m.rx_time);
+    const items: ThreadItem[] = [
+      ...messages.map((m) => ({ at: m.rx_time, message: m }) as ThreadItem),
+      ...exchanges.map((e) => ({ at: e.ts, exchange: e }) as ThreadItem),
+    ].sort((a, b) => a.at - b.at);
+    const out: { day: string; items: ThreadItem[] }[] = [];
+    for (const item of items) {
+      const day = dayLabel(item.at);
       if (!out.length || out[out.length - 1].day !== day) out.push({ day, items: [] });
-      out[out.length - 1].items.push(m);
+      out[out.length - 1].items.push(item);
     }
     return out;
-  }, [messages]);
+  }, [messages, exchanges]);
 
-  if (loading && !messages.length) return <Empty>Loading…</Empty>;
-  if (!messages.length)
+  if (loading && !messages.length && !exchanges.length) return <Empty>Loading…</Empty>;
+  if (!messages.length && !exchanges.length)
     return (
       <div className="flex-1">
         <Empty>No messages stored for this conversation yet.</Empty>
@@ -330,21 +362,34 @@ function Thread({
       {grouped.map((group) => (
         <div key={group.day}>
           <div className="my-3 text-center text-[11px] uppercase tracking-wider text-mist-400">{group.day}</div>
-          {group.items.map((m) => (
-            <Bubble
-              key={m.seq}
-              message={m}
-              mine={myNodeNum !== null && m.from_num === myNodeNum}
-              onDetails={() => onDetails(m.seq)}
-              onReact={(emoji) => onReact(m, emoji)}
-            />
-          ))}
+          {group.items.map((item) =>
+            item.exchange ? (
+              <ExchangeLine
+                key={`x${item.exchange.id}`}
+                exchange={item.exchange}
+                onOpenNode={onOpenNode}
+              />
+            ) : (
+              <Bubble
+                key={item.message!.seq}
+                message={item.message!}
+                mine={myNodeNum !== null && item.message!.from_num === myNodeNum}
+                onDetails={() => onDetails(item.message!.seq)}
+                onReact={(emoji) => onReact(item.message!, emoji)}
+                onOpenNode={onOpenNode}
+              />
+            ),
+          )}
         </div>
       ))}
       <div ref={bottom} />
     </div>
   );
 }
+
+/** A conversation holds messages and the requests made of the same node, in
+ *  the order they happened. */
+type ThreadItem = { at: number; message?: Message; exchange?: Exchange };
 
 const displayName = (n: NodeName) => n.short || n.long || n.id;
 const fullName = (n: NodeName) => (n.long && n.short ? `${n.long} (${n.short})` : n.long || n.short || n.id);
@@ -354,11 +399,13 @@ function Bubble({
   mine,
   onDetails,
   onReact,
+  onOpenNode,
 }: {
   message: Message;
   mine: boolean;
   onDetails: () => void;
   onReact: (emoji: string) => Promise<void>;
+  onOpenNode: (num: number, name: NodeName) => void;
 }) {
   const [picking, setPicking] = useState(false);
   const [sending, setSending] = useState(false);
@@ -373,13 +420,13 @@ function Bubble({
     }
   };
   const hops = message.hop_start - message.hop_limit;
-  const who = `${message.sender.long ?? message.sender.short ?? ""} ${message.sender.id}`.trim();
 
   if (message.is_reaction) {
     // Its target is older than this page, so it cannot sit under it.
     return (
-      <div className="mb-2 text-center text-[11px] text-mist-400" title={who}>
-        {displayName(message.sender)} reacted {message.text} to an earlier message · {clockTime(message.rx_time)}
+      <div className="mb-2 text-center text-[11px] text-mist-400">
+        <NodeLink name={message.sender} onClick={() => onOpenNode(message.from_num, message.sender)} /> reacted{" "}
+        {message.text} to an earlier message · {clockTime(message.rx_time)}
       </div>
     );
   }
@@ -393,8 +440,8 @@ function Bubble({
           }`}
         >
           {!mine && (
-            <div className="mb-0.5 text-[11px] font-semibold text-accent-400" title={who}>
-              {displayName(message.sender)}
+            <div className="mb-0.5 text-[11px] font-semibold">
+              <NodeLink name={message.sender} onClick={() => onOpenNode(message.from_num, message.sender)} />
             </div>
           )}
           <div className="whitespace-pre-wrap break-words">{message.text}</div>
@@ -444,11 +491,13 @@ function Bubble({
       {message.reactions.length > 0 && (
         <div className={`-mt-1 flex flex-wrap gap-1 px-2 ${mine ? "justify-end" : ""}`}>
           {message.reactions.map((r, i) => (
+            // Not a "react too" button: tapping a reaction opens whoever left
+            // it, so a mis-tap cannot put an emoji on the mesh.
             <button
               key={i}
-              onClick={() => void react(r.emoji)}
-              disabled={sending}
-              title={`${r.sender.long ?? r.sender.short ?? ""} ${r.sender.id}`.trim()}
+              onClick={() => onOpenNode(r.from_num, r.sender)}
+              aria-label={`Show ${displayName(r.sender)}`}
+              title={`${fullName(r.sender)} - show node`}
               className="rounded-full border border-ink-700 bg-ink-900 px-1.5 py-0.5 text-[11px] hover:border-accent-400/50"
             >
               {r.emoji} <span className="text-mist-400">{displayName(r.sender)}</span>
@@ -457,6 +506,37 @@ function Bubble({
         </div>
       )}
     </div>
+  );
+}
+
+/** What happened between the two of us besides talking: a traceroute, a
+ *  position exchange. Tapping it opens the node, where the detail lives. */
+function ExchangeLine({
+  exchange: e,
+  onOpenNode,
+}: {
+  exchange: Exchange;
+  onOpenNode: (num: number, name: NodeName) => void;
+}) {
+  return (
+    <div className="mb-2 text-center text-[11px] text-mist-400">
+      <button onClick={() => onOpenNode(e.node_num, e.node)} className="hover:text-mist-200">
+        {exchangeLine(e)} · {clockTime(e.ts)}
+      </button>
+    </div>
+  );
+}
+
+/** A name in the thread: tapping it opens that node's card. */
+function NodeLink({ name, onClick }: { name: NodeName; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title={`${fullName(name)} - show node`}
+      className="text-accent-400 hover:underline"
+    >
+      {displayName(name)}
+    </button>
   );
 }
 
