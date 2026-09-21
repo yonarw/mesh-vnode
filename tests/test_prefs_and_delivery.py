@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from meshtastic.protobuf import config_pb2, mesh_pb2
 
+import mesh_vnode
 from mesh_vnode import protocol as proto
 from mesh_vnode.config import Settings
 from mesh_vnode.upstream import _Interface
@@ -227,6 +228,14 @@ def test_status_carries_the_local_nodes_names(api):
     http, _ = api
     link = http.get("/api/status").json()["upstream"]
     assert (link["my_short_name"], link["my_long_name"]) == ("HOME", "Home Base")
+
+
+def test_status_reports_the_package_version(api):
+    """The web UI shows this, and it is the only place a running instance says
+    which version it is. It comes from the installed package metadata, whose one
+    source is `version` in pyproject.toml."""
+    http, _ = api
+    assert http.get("/api/status").json()["version"] == mesh_vnode.__version__
 
 
 def test_message_details_resolve_the_relayer(api):

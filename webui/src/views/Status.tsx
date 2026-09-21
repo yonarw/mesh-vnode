@@ -50,6 +50,7 @@ export default function Status({ status, tick }: { status: StatusT | null; tick:
 
       <Card title="Virtual node" right={<Pill tone="accent">{status.vnode.listen}</Pill>}>
         <div className="mb-3 flex flex-wrap gap-1.5">
+          <Pill>v{status.version}</Pill>
           <Pill>replay: {status.vnode.replay_mode}</Pill>
           <Pill>client key: {status.vnode.client_key_mode}</Pill>
         </div>

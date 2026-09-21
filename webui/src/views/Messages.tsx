@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   useResource,
@@ -12,6 +12,11 @@ import {
 } from "../api";
 import { convKey, usePrefs } from "../prefs";
 import { Empty, Pill, clockTime, dayLabel } from "../ui";
+
+// The tapbacks the Meshtastic phone apps offer, in their order. Staying with
+// this set means a reaction sent here renders as a tapback there rather than
+// as a stray one-character message.
+const TAPBACKS = ["\u{1F44D}", "\u{1F44E}", "\u{1F602}", "\u2757", "\u2753", "\u{1F622}", "\u{1F4A9}"];
 
 export type Target = { kind: "channel"; index: number; name: string } | { kind: "dm"; node: number; name: string };
 
@@ -82,6 +87,23 @@ export default function Messages({
     [target?.kind, target?.kind === "channel" ? target.index : target?.node, tick],
   );
 
+  // A reaction is a normal send: the emoji is the payload and reply_id names
+  // the message. Refresh rather than patch locally - the reaction comes back
+  // through the same store as everyone else's.
+  const react = useCallback(
+    async (message: Message, emoji: string) => {
+      if (!named) return;
+      await api.send({
+        text: emoji,
+        emoji: true,
+        reply_id: message.packet_id,
+        ...(named.kind === "channel" ? { channel: named.index } : { to: named.node }),
+      });
+      void messages.refresh();
+    },
+    [named, messages],
+  );
+
   return (
     <div className="flex h-full flex-col gap-3">
       <ConversationBar convos={convos.data} target={named} onSelect={setTarget} />
@@ -91,6 +113,7 @@ export default function Messages({
         myNodeNum={myNodeNum}
         loading={messages.loading}
         onDetails={setDetails}
+        onReact={react}
       />
       {named && <Composer target={named} onSent={() => void messages.refresh()} />}
       {details !== null && <DetailsSheet seq={details} tick={tick} myNodeNum={myNodeNum} onClose={() => setDetails(null)} />}
@@ -271,11 +294,13 @@ function Thread({
   myNodeNum,
   loading,
   onDetails,
+  onReact,
 }: {
   messages: Message[];
   myNodeNum: number | null;
   loading: boolean;
   onDetails: (seq: number) => void;
+  onReact: (message: Message, emoji: string) => Promise<void>;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -311,6 +336,7 @@ function Thread({
               message={m}
               mine={myNodeNum !== null && m.from_num === myNodeNum}
               onDetails={() => onDetails(m.seq)}
+              onReact={(emoji) => onReact(m, emoji)}
             />
           ))}
         </div>
@@ -323,7 +349,29 @@ function Thread({
 const displayName = (n: NodeName) => n.short || n.long || n.id;
 const fullName = (n: NodeName) => (n.long && n.short ? `${n.long} (${n.short})` : n.long || n.short || n.id);
 
-function Bubble({ message, mine, onDetails }: { message: Message; mine: boolean; onDetails: () => void }) {
+function Bubble({
+  message,
+  mine,
+  onDetails,
+  onReact,
+}: {
+  message: Message;
+  mine: boolean;
+  onDetails: () => void;
+  onReact: (emoji: string) => Promise<void>;
+}) {
+  const [picking, setPicking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const react = async (emoji: string) => {
+    setPicking(false);
+    if (sending) return;
+    setSending(true);
+    try {
+      await onReact(emoji);
+    } finally {
+      setSending(false);
+    }
+  };
   const hops = message.hop_start - message.hop_limit;
   const who = `${message.sender.long ?? message.sender.short ?? ""} ${message.sender.id}`.trim();
 
@@ -338,40 +386,73 @@ function Bubble({ message, mine, onDetails }: { message: Message; mine: boolean;
 
   return (
     <div className={`mb-2 flex flex-col ${mine ? "items-end" : "items-start"}`}>
-      <div
-        className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
-          mine ? "bg-accent-400/15 text-mist-200" : "bg-ink-800 text-mist-200"
-        }`}
-      >
-        {!mine && (
-          <div className="mb-0.5 text-[11px] font-semibold text-accent-400" title={who}>
-            {displayName(message.sender)}
-          </div>
-        )}
-        <div className="whitespace-pre-wrap break-words">{message.text}</div>
-        {/* The whole meta line opens the details: a bare tick is too small a
-            target on a phone. */}
-        <button
-          onClick={onDetails}
-          className="mt-1 flex items-center gap-2 text-[10px] text-mist-400 hover:text-mist-200"
-          title="Details"
+      <div className={`flex max-w-[85%] items-end gap-1 ${mine ? "flex-row-reverse" : ""}`}>
+        <div
+          className={`min-w-0 rounded-2xl px-3 py-2 text-sm ${
+            mine ? "bg-accent-400/15 text-mist-200" : "bg-ink-800 text-mist-200"
+          }`}
         >
-          <span>{clockTime(message.rx_time)}</span>
-          {message.rx_snr !== null && <span>{message.rx_snr.toFixed(1)} dB</span>}
-          {hops > 0 && <span>{hops} hop{hops > 1 ? "s" : ""}</span>}
-          {mine && <DeliveryMark message={message} />}
+          {!mine && (
+            <div className="mb-0.5 text-[11px] font-semibold text-accent-400" title={who}>
+              {displayName(message.sender)}
+            </div>
+          )}
+          <div className="whitespace-pre-wrap break-words">{message.text}</div>
+          {/* The whole meta line opens the details: a bare tick is too small a
+              target on a phone. */}
+          <button
+            onClick={onDetails}
+            className="mt-1 flex items-center gap-2 text-[10px] text-mist-400 hover:text-mist-200"
+            title="Details"
+          >
+            <span>{clockTime(message.rx_time)}</span>
+            {message.rx_snr !== null && <span>{message.rx_snr.toFixed(1)} dB</span>}
+            {hops > 0 && <span>{hops} hop{hops > 1 ? "s" : ""}</span>}
+            {mine && <DeliveryMark message={message} />}
+          </button>
+        </div>
+        {/* Sits outside the bubble so it never covers the text, and stays a
+            full-size touch target on a phone. */}
+        <button
+          onClick={() => setPicking((v) => !v)}
+          disabled={sending}
+          aria-label="Add reaction"
+          aria-expanded={picking}
+          title="Add reaction"
+          className={`h-7 w-7 shrink-0 rounded-full border border-ink-700 text-xs leading-none transition ${
+            picking ? "border-accent-400/50 bg-accent-400/15 text-accent-400" : "text-mist-400 hover:text-mist-200"
+          } ${sending ? "opacity-50" : ""}`}
+        >
+          ☺
         </button>
       </div>
+
+      {picking && (
+        <div className={`mt-1 flex flex-wrap gap-1 ${mine ? "justify-end" : ""}`}>
+          {TAPBACKS.map((e) => (
+            <button
+              key={e}
+              onClick={() => void react(e)}
+              className="h-8 w-8 rounded-full border border-ink-700 bg-ink-900 text-base leading-none hover:border-accent-400/50 hover:bg-accent-400/10"
+            >
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
+
       {message.reactions.length > 0 && (
-        <div className="-mt-1 flex flex-wrap gap-1 px-2">
+        <div className={`-mt-1 flex flex-wrap gap-1 px-2 ${mine ? "justify-end" : ""}`}>
           {message.reactions.map((r, i) => (
-            <span
+            <button
               key={i}
+              onClick={() => void react(r.emoji)}
+              disabled={sending}
               title={`${r.sender.long ?? r.sender.short ?? ""} ${r.sender.id}`.trim()}
-              className="rounded-full border border-ink-700 bg-ink-900 px-1.5 py-0.5 text-[11px]"
+              className="rounded-full border border-ink-700 bg-ink-900 px-1.5 py-0.5 text-[11px] hover:border-accent-400/50"
             >
               {r.emoji} <span className="text-mist-400">{displayName(r.sender)}</span>
-            </span>
+            </button>
           ))}
         </div>
       )}

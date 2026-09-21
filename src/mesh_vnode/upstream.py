@@ -395,6 +395,8 @@ class Upstream:
         destination: int | str = proto.BROADCAST_NUM,
         channel_index: int = 0,
         want_ack: bool = False,
+        reply_id: int | None = None,
+        emoji: bool = False,
     ):
         iface = self.iface
         if iface is None:
@@ -408,12 +410,35 @@ class Upstream:
             my_num = self.my_node_num
             if my_num and self.db.public_key(my_num):
                 public_key = self.db.public_key(destination)
-        return iface.sendData(
-            text.encode("utf-8"),
-            destinationId=destination,
-            portNum=proto.PORT_TEXT,
+        if not emoji:
+            return iface.sendData(
+                text.encode("utf-8"),
+                destinationId=destination,
+                portNum=proto.PORT_TEXT,
+                wantAck=want_ack,
+                channelIndex=channel_index,
+                pkiEncrypted=public_key is not None,
+                publicKey=public_key,
+                replyId=reply_id,
+            )
+        # A reaction is an ordinary text packet whose payload is the emoji, with
+        # `emoji` set and `reply_id` naming the message it belongs to.
+        # meshtastic-python's sendData carries reply_id but has no emoji
+        # parameter, so build the packet exactly as sendData would - same
+        # defaults, same id source - and hand it to the same _sendPacket.
+        packet = mesh_pb2.MeshPacket()
+        packet.channel = channel_index
+        packet.decoded.payload = text.encode("utf-8")
+        packet.decoded.portnum = proto.PORT_TEXT
+        packet.decoded.emoji = 1
+        if reply_id:
+            packet.decoded.reply_id = reply_id
+        packet.id = iface._generatePacketId()
+        packet.priority = mesh_pb2.MeshPacket.Priority.RELIABLE
+        return iface._sendPacket(
+            packet,
+            destination,
             wantAck=want_ack,
-            channelIndex=channel_index,
             pkiEncrypted=public_key is not None,
             publicKey=public_key,
         )

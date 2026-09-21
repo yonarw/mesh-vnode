@@ -5,11 +5,15 @@
 # /data/options.json and the image reads that through VNODE_CONFIG_FILE, so the
 # add-on carries no translation layer and the standalone service is unchanged.
 #
-# Keep `version` in step with the pushed image tag - the Supervisor pulls
-# <image>:<version>.
+# `version` below is generated - do not edit it by hand. The one hand-edited
+# copy of the version is `version` in pyproject.toml; scripts/bump-version.sh
+# writes it here too, because the Supervisor compares THIS file against the
+# installed add-on and pulls <image>:<version>. It never looks at the registry,
+# so a stale value here means no update is ever offered. CI refuses to build if
+# the two disagree.
 name: Mesh vnode
 slug: mesh_vnode
-version: "0.1.0"
+version: "0.1.1"
 description: A virtual node that remembers messages, for use with Meshtastic meshes
 url: https://github.com/yonarw/mesh-vnode
 image: ghcr.io/yonarw/mesh-vnode

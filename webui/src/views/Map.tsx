@@ -458,7 +458,7 @@ export default function MapView({
         </p>
       )}
 
-      <div className="relative min-h-[320px] flex-1 overflow-hidden rounded-xl border border-ink-700">
+      <div className="relative min-h-[65vh] flex-1 overflow-hidden rounded-xl border border-ink-700 sm:min-h-[320px]">
         {/* Inline, not `absolute inset-0`: maplibre-gl.css sets
             `.maplibregl-map { position: relative }`, and as unlayered CSS it
             beats Tailwind's layered utilities, which left the map 0px tall. */}
@@ -494,7 +494,7 @@ export default function MapView({
         {/* Bottom left: the bottom right is where the basemap attribution (i) sits. */}
         {sel && <NodeCard node={sel} track={shownTrack} span={span} onClose={() => setSelected(null)} onMessage={onMessage} />}
       </div>
-      <p className="px-1 text-[11px] text-mist-400">
+      <p className="hidden px-1 text-[11px] text-mist-400 sm:block">
         <span className="text-accent-400">●</span> this node · <span className="text-warn-400">●</span> favourites ·{" "}
         <span className="text-signal-400">●</span> others. Circles show how far a blurred position can be off. Favourites
         are shown however long ago they were heard. A selected node's track fades from amber (newest) to slate (oldest).

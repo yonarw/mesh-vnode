@@ -20,6 +20,7 @@ class FakeIface:
 
     def __init__(self):
         self.calls = []
+        self.packets = []
 
     def sendData(self, data, **kw):  # noqa: N802 - the library's name
         self.calls.append((data, kw))
@@ -28,6 +29,16 @@ class FakeIface:
         pkt.decoded.payload = data
         pkt.pki_encrypted = bool(kw["pkiEncrypted"])
         return pkt
+
+    # A reaction cannot go through sendData - it has no emoji parameter - so
+    # send_text builds the packet and calls these two directly.
+    def _generatePacketId(self):  # noqa: N802 - the library's name
+        return 0xA00 + len(self.packets) + 1
+
+    def _sendPacket(self, meshPacket, destinationId, **kw):  # noqa: N802,N803
+        self.packets.append((meshPacket, destinationId, kw))
+        meshPacket.to = destinationId if isinstance(destinationId, int) else proto.BROADCAST_NUM
+        return meshPacket
 
 
 @pytest.fixture
@@ -118,3 +129,49 @@ def test_the_node_list_survives_binary_keys(tmp_path):
     [node] = TestClient(app).get("/api/nodes").json()
     assert node["has_public_key"] is True
     assert "public_key" not in node
+
+
+# ---------------------------------------------------------------- reactions
+
+
+def test_a_reaction_goes_out_as_a_text_packet_with_emoji_set(keyed):
+    """The wire format of a tapback: the payload is the emoji, `emoji` marks it
+    as a reaction rather than a one-character message, and `reply_id` says which
+    message it belongs to."""
+    keyed.send_text("\U0001F44D", destination=FRIEND, reply_id=0x123, emoji=True)
+    packet, destination, kw = keyed.iface.packets[0]
+    assert packet.decoded.emoji == 1
+    assert packet.decoded.reply_id == 0x123
+    assert packet.decoded.payload.decode() == "\U0001F44D"
+    assert packet.decoded.portnum == proto.PORT_TEXT
+    assert destination == FRIEND
+    # Sealed like any other DM to a node whose key we hold.
+    assert kw["publicKey"] == FRIEND_KEY
+
+
+def test_an_ordinary_message_still_goes_through_senddata(keyed):
+    keyed.send_text("hi", destination=FRIEND)
+    assert keyed.iface.calls and not keyed.iface.packets
+
+
+def test_a_reaction_is_folded_into_the_message_it_targets(tmp_path):
+    """End to end: the reaction is stored like any packet, and /api/messages
+    hangs it off its target instead of listing it as a message of its own."""
+    app = create_app(Settings(db_path=tmp_path / "r.sqlite3"))
+    vnode = app.state.vnode
+    seed_me(vnode.db)
+    vnode.upstream.connected.set()
+    vnode.upstream.iface = FakeIface()
+    http = TestClient(app)
+
+    sent = http.post("/api/send", json={"text": "hi", "channel": 0}).json()
+    res = http.post(
+        "/api/send",
+        json={"text": "\U0001F44D", "channel": 0, "emoji": True, "reply_id": sent["packet_id"]},
+    )
+    assert res.status_code == 200
+
+    messages = http.get("/api/messages?channel=0").json()
+    assert [m["text"] for m in messages] == ["hi"]
+    [target] = [m for m in messages if m["packet_id"] == sent["packet_id"]]
+    assert [r["emoji"] for r in target["reactions"]] == ["\U0001F44D"]

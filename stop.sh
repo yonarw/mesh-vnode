@@ -69,6 +69,20 @@ if [[ -f $PIDFILE ]]; then
     rm -f "$PIDFILE"
 fi
 
+# The fake node from `start.sh --dev`. It needs its own pidfile because
+# is_server() deliberately refuses to match `mesh-vnode fakenode`.
+FAKE_PIDFILE="data/fakenode.pid"
+if [[ -f $FAKE_PIDFILE ]]; then
+    pid=$(cat "$FAKE_PIDFILE" 2>/dev/null || true)
+    if [[ -n ${pid:-} ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "stopping the fake node (pid $pid)"
+        kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+        wait_for_exit "$pid" 5 || kill -KILL -- "-$pid" 2>/dev/null || true
+        stopped=1
+    fi
+    rm -f "$FAKE_PIDFILE"
+fi
+
 # Catch an instance started some other way, or one whose pidfile was lost.
 strays=()
 for pid in $(pgrep -f "mesh-vnode" 2>/dev/null || true); do

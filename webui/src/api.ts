@@ -9,12 +9,20 @@ export const BROADCAST = 4294967295;
  *
  *  Derived from the bundle's own URL, not from `location`. The tab lives in the
  *  hash (see App.tsx), so the path never moves under us, and one level up from
- *  the module is the root either way: /src/api.ts in dev, /assets/<chunk>.js in
- *  a build. Vite's `base: "./"` keeps index.html's own asset links relative. */
-const BASE = new URL("../", import.meta.url).pathname;
+ *  /assets/<chunk>.js is the root. Vite's `base: "./"` keeps index.html's own
+ *  asset links relative.
+ *
+ *  Not so in dev: vite rewrites `import.meta.url` in a source module to
+ *  /@fs/<absolute path on disk>, which is not a web root at all - deriving from
+ *  it sends every request into the void and the UI reports the HTML it gets
+ *  back as "API unreachable". The dev server always serves the app from "/",
+ *  and DEV is replaced by `false` at build time, so this costs the bundle
+ *  nothing. */
+const BASE = import.meta.env.DEV ? "/" : new URL("../", import.meta.url).pathname;
 const API = `${BASE}api`;
 
 export interface Status {
+  version: string;
   upstream: {
     connected: boolean;
     host: string;
@@ -324,7 +332,7 @@ export const api = {
     p.set("limit", String(opts.limit ?? 300));
     return get<Message[]>(`/messages?${p}`);
   },
-  send: async (body: { text: string; channel?: number; to?: number }) => {
+  send: async (body: { text: string; channel?: number; to?: number; reply_id?: number; emoji?: boolean }) => {
     const res = await fetch(`${API}/send`, {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -23,6 +23,8 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"] | "settings";
 
+const WIDE_TABS = new Set<TabId>(["map", "telemetry"]);
+
 /** The hash is `#tab`, `#messages/<conversation>` (ch:1, dm:123456) or
  *  `#map/<node number>`. */
 function parseHash(): { tab: TabId; conv: Target | null; mapNode: number | null } {
@@ -129,7 +131,14 @@ function Shell() {
   }, [me]);
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col overflow-x-hidden px-4">
+    <div
+      className={`mx-auto flex h-full flex-col overflow-x-hidden px-4 ${
+        // Messages and lists read better in a column; the map and the charts
+        // are the two views that actually want the pixels. Capped rather than
+        // unbounded so an ultrawide does not stretch the header across a metre.
+        WIDE_TABS.has(tab) ? "max-w-[1600px]" : "max-w-3xl"
+      }`}
+    >
       <header className="safe-top flex items-center justify-between gap-3 py-3">
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold text-mist-200" title={up?.my_node_id ?? undefined}>

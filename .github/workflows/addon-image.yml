@@ -1,21 +1,74 @@
 # Publishes the image the Home Assistant add-on pulls.
 #
-# The add-on does not build on the user's machine: addon/config.yaml names
-# <image>:<version> and the Supervisor pulls it. So the tag pushed here has to
-# match `version` in addon/config.yaml - bump them together.
+# The version comes from `version` in pyproject.toml - not from a git tag, and
+# not from anything typed here. The add-on does not build on the user's machine:
+# addon/config.yaml names <image>:<version> and the Supervisor pulls it, so the
+# tag pushed here has to match. scripts/bump-version.sh writes both; the `check`
+# job below refuses to build if they ever drift.
+#
+# Pushing to main is the release trigger. The build is skipped when the image
+# for that version already exists, so ordinary commits cost one cheap job.
 name: Add-on image
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.exists.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: v
+        name: Read version from pyproject.toml
+        run: |
+          version=$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "project version: $version"
+
+      - uses: astral-sh/setup-uv@v5
+
+      # The Supervisor reads addon/config.yaml out of the branch, so a mismatch
+      # here is invisible until someone wonders why no update ever shows up.
+      - name: Check addon/config.yaml and uv.lock agree
+        run: |
+          version='${{ steps.v.outputs.version }}'
+          addon=$(sed -n 's/^version: "\(.*\)"$/\1/p' addon/config.yaml | head -1)
+          if [ "$addon" != "$version" ]; then
+            echo "::error file=addon/config.yaml::version is $addon, pyproject.toml says $version - run scripts/bump-version.sh $version"
+            exit 1
+          fi
+          uv lock --check
+
+      - id: exists
+        name: Skip if this version was already published
+        run: |
+          version='${{ steps.v.outputs.version }}'
+          image="ghcr.io/${{ github.repository_owner }}/mesh-vnode:$version"
+          token=$(echo -n '${{ secrets.GITHUB_TOKEN }}' | base64 -w0)
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/${{ github.repository_owner }}/mesh-vnode/manifests/$version")
+          if [ "$code" = "200" ]; then
+            echo "$image already exists - nothing to do"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,20 +84,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/mesh-vnode
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mesh-vnode:${{ needs.check.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/mesh-vnode:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The tag is now a marker for `git checkout v0.1.1`, not an input to
+      # anything - the image above was built and named without it.
+      - name: Tag the release commit
+        run: |
+          version='${{ needs.check.outputs.version }}'
+          git tag "v$version" "$GITHUB_SHA"
+          git push origin "v$version"

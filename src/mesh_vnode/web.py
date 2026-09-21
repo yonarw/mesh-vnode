@@ -21,8 +21,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__, series
 from . import protocol as proto
-from . import series
 from .app import VNodeApp
 from .config import Settings
 from .upstream import is_own_virtual_node
@@ -46,6 +46,11 @@ class SendRequest(BaseModel):
     channel: int = 0
     to: int | str = proto.BROADCAST_NUM
     want_ack: bool = True
+    # A reaction: `text` is the emoji itself and `reply_id` is the packet id of
+    # the message it belongs to. The pair travels as an ordinary text packet -
+    # see Upstream.send_text.
+    reply_id: int | None = None
+    emoji: bool = False
 
 
 class FavoriteRequest(BaseModel):
@@ -161,7 +166,7 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
         finally:
             await vnode.stop()
 
-    api = FastAPI(title="mesh-vnode", version="0.1.0", lifespan=lifespan)
+    api = FastAPI(title="mesh-vnode", version=__version__, lifespan=lifespan)
     db = vnode.db
 
     def _my_names() -> dict[str, Any]:
@@ -185,6 +190,7 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
     @api.get("/api/status")
     def status() -> dict[str, Any]:
         return {
+            "version": __version__,
             "upstream": {**vnode.upstream.status(), **_my_names()},
             "vnode": vnode.server.status(),
             "counts": db.counts(),
@@ -491,6 +497,8 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
                 destination=req.to,
                 channel_index=req.channel,
                 want_ack=req.want_ack,
+                reply_id=req.reply_id,
+                emoji=req.emoji,
             )
         except Exception as exc:
             raise HTTPException(502, f"send failed: {exc}") from exc
