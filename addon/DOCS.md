@@ -1,108 +1,47 @@
 # Mesh vnode
 
-A virtual node that remembers messages, for use with Meshtastic® meshes.
-
-It holds the single TCP connection to your real node, stores every text message
-in SQLite, and presents itself to the Meshtastic phone app as a node on TCP.
-When the app connects it gets the node's config and then the messages it missed.
-The node keeps its own backlog for a disconnected app, but only 8-32 packets and
-only in RAM; this one is on disk, survives a reboot, and several apps can read it
-at once.
+A virtual node that remembers messages, for use with Meshtastic® meshes. It holds the
+connection to your node, stores the messages, and serves them to the Meshtastic app on
+port 4404 - including the ones the app missed while it was away.
 
 ## Setting it up
 
-1. Set **Node address** (`upstream_host`) to your node's **IP address**, then
-   start the add-on.
-2. Open the web UI from the sidebar. The Status page should show the node
-   connected and the config captured.
-3. In the Meshtastic app, add a node over **Network**: host is the machine
-   running Home Assistant, port **4404**.
-4. Stop anything else that connects to the node directly - see Troubleshooting.
-
-The host port for 4404 can be changed in the add-on's *Network* panel if something else
-on the machine already uses it.
-
-### Use the IP, not `meshtastic.local`
-
-mDNS names do not resolve inside the add-on's container. The default is
-`meshtastic.local` only because that is the standalone default; it will not work
-here. Give the node a static lease on your router and use that address.
-
-The address can also be changed later in the web UI (⚙), which then wins over
-this option until you clear it there.
-
-## Where things are reachable
-
-**The web UI** is served through Home Assistant's ingress: it appears in the
-sidebar and is protected by your Home Assistant login. Its port is deliberately
-not published to the network - the only way in is through Home Assistant.
-
-**Port 4404** is a real port on your Home Assistant machine, because the phone
-app speaks raw TCP and ingress cannot proxy that. It is reachable from your LAN
-and, like the node's own port 4403, it is not authenticated: anything that can
-reach it can read the stored history and send to the mesh. That is fine on a
-trusted network; do not forward it from the internet.
+1. Set `upstream_host` to your node's **IP address** (`meshtastic.local` does not resolve
+   inside the add-on) and start the add-on.
+2. Open the web UI from the sidebar. The Status page should show the node connected.
+3. In the Meshtastic app, add a node over **Network**: your Home Assistant machine, port
+   **4404**.
+4. Stop anything else that connects to the node directly and point it at 4404 instead.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
-| `upstream_host`, `upstream_port` | The real node. Use an IP (see above). |
-| `allow_admin` | Let connected apps change the node's settings through the virtual node. Off by default, and there is a switch for it in the web UI too. |
+| `upstream_host`, `upstream_port` | The node. The web UI (⚙) can override the address. |
+| `allow_admin` | Let apps change the node's settings. Also a switch in the web UI. |
 | `retention_days` | How long stored messages are kept. |
 | `log_level` | `DEBUG` is very loud. |
 
-Everything else is a default that has not needed changing. Should you ever need one, the
-full list is in the repository's `docs/configuration.md`; the add-on reads any `VNODE_*`
-variable as well.
+The add-on reads any `VNODE_*` setting as well - see
+[Configuration](https://github.com/yonarw/mesh-vnode/blob/main/docs/configuration.md). The
+host port for 4404 is set in the *Network* panel.
 
-## Data
+## Security
 
-Messages, settings and per-client cursors live in the add-on's `/data`, so they
-survive restarts and updates. Removing the add-on deletes them.
-
-The add-on also keeps the node's config handshake verbatim, because that is what
-it replays to a connecting app. That capture includes your channel keys, the
-node's private key and the WiFi credentials from its network config - the same
-set the node hands any phone that connects to it, but here it sits in a file.
-Treat a copy of `/data` like a password store, and never attach a log taken with
-`log_level: DEBUG` and frame tracing to a bug report.
-
-## The map
-
-The map needs no account: it uses OpenFreeMap (OpenStreetMap data) by default.
-CARTO basemaps are available under Settings in the web UI and can take a free
-key. Map tiles are the only thing that leaves your network, and only the browser
-fetches them.
+The web UI is behind your Home Assistant login. Port 4404 is not: anything on your LAN can
+use it, so do not forward it. The data in `/data` includes your channel keys and the
+node's private key; treat a copy of it like a password store. Details:
+[Security](https://github.com/yonarw/mesh-vnode/blob/main/docs/security.md).
 
 ## Troubleshooting
 
-**Messages are missing, or the node's battery drains.** Something else is talking to the
-node at the same time. A node serves one TCP client and hands the link to whoever
-connects last, so MeshMonitor or a phone pointed straight at the node will fight this
-add-on for it. Point them at port 4404 instead.
-
-**The app sees duplicates after reconnecting.** The client is not being
-recognised again - check whether its IP changed, and give the phone a static
-lease.
-
-**Upstream never connects.** Almost always `meshtastic.local` in the node
-address. Use the IP.
-
-## More documentation
-
-These live in the repository rather than in the add-on, so they are a click away
-rather than on this tab:
-
-- **[Configuration](https://github.com/yonarw/mesh-vnode/blob/main/docs/configuration.md)** -
-  every setting, what it does, and the handful that exist only in the web UI (⚙).
-- **[Security](https://github.com/yonarw/mesh-vnode/blob/main/docs/security.md)** - what
-  is exposed on which port, and what the message store holds at rest.
-- **[Install](https://github.com/yonarw/mesh-vnode/blob/main/docs/install.md)** - the
-  standalone and Docker Compose modes, if you ever want it off Home Assistant.
+- **Messages are missing, or the node's battery drains:** something else is connected to
+  the node directly. Point it at port 4404.
+- **The app gets duplicates after reconnecting:** the phone's IP changed; give it a static
+  lease.
+- **The node never connects:** use its IP, not `meshtastic.local`.
 
 ---
 
-Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components are released under various licenses, see [GitHub](https://github.com/meshtastic) for details. No warranty is provided - use at your own risk.
-
-This add-on is not affiliated with or endorsed by the Meshtastic project.
+Meshtastic® is a registered trademark of Meshtastic LLC. This add-on is not affiliated with
+or endorsed by the Meshtastic project, and comes with no warranty.
