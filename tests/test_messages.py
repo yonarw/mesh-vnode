@@ -180,6 +180,7 @@ def test_old_rows_are_backfilled_from_raw_bytes(tmp_path):
     db.store_packet(raw=fr.SerializeToString(), meta={**proto.packet_meta(pkt)})
     # Simulate a row written before the columns existed.
     db._conn.execute("UPDATE packets SET reply_id = NULL, emoji = 0")
+    db._conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
     db._conn.commit()
     db.close()
 

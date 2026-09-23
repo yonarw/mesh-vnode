@@ -705,3 +705,13 @@ async def test_disconnect_all_drops_every_app(running):
     assert server.clients == {}
     assert await client.reader.read(100) == b""  # the app sees the connection close
     await client.close()
+
+
+async def test_stopping_does_not_wait_for_connected_apps(running):
+    server, _, _, connect = running
+    client = await connect()
+    await client.want_config(1)
+    await client.collect(0.3)
+    await asyncio.wait_for(server.stop(), 2)
+    assert not server.clients
+    assert await client.reader.read() == b""

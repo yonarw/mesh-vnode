@@ -200,6 +200,17 @@ def test_a_version_1_database_is_migrated(tmp_path):
     db.close()
 
 
+def test_a_current_database_is_not_migrated_again(tmp_path):
+    path = tmp_path / "current.sqlite3"
+    db = Database(path)
+    db.store_packet(raw=b"\x00", meta={"packet_id": 1, "from_num": 1, "portnum": 67})
+    db.close()
+
+    db = Database(path)
+    assert [r["portnum"] for r in db.packets_after(0, limit=10)] == [67]
+    db.close()
+
+
 def test_precision_bits_translate_to_distance():
     assert proto.precision_bits_meters(32) == 0.0
     assert 2800 < proto.precision_bits_meters(13) < 3000

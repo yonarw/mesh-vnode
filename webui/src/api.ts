@@ -354,12 +354,6 @@ export interface EventRow {
   message: string;
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API}${path}`);
-  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
 /** FastAPI puts the reason in `detail`, a string or a list of field errors. */
 async function errorText(res: Response): Promise<string> {
   const body = await res.text();
@@ -372,6 +366,17 @@ async function errorText(res: Response): Promise<string> {
   }
   return body || res.statusText;
 }
+
+async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    method,
+    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+  });
+  if (!res.ok) throw new Error(await errorText(res));
+  return res.json() as Promise<T>;
+}
+
+const get = <T>(path: string) => request<T>(path);
 
 export const api = {
   status: () => get<Status>("/status"),
@@ -391,63 +396,22 @@ export const api = {
     p.set("limit", String(opts.limit ?? 300));
     return get<Message[]>(`/messages?${p}`);
   },
-  send: async (body: { text: string; channel?: number; to?: number; reply_id?: number; emoji?: boolean }) => {
-    const res = await fetch(`${API}/send`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error((await res.text()) || res.statusText);
-    return res.json();
-  },
+  send: (body: { text: string; channel?: number; to?: number; reply_id?: number; emoji?: boolean }) =>
+    request<{ packet_id: number; seq: number | null }>("/send", "POST", body),
   messageDetails: (seq: number) => get<MessageDetails>(`/messages/${seq}`),
   exchanges: (node?: number, limit = 50) =>
     get<Exchange[]>(`/exchanges?limit=${limit}${node === undefined ? "" : `&node=${node}`}`),
   /** Ask one node for something. The answer arrives later, through the socket. */
-  exchange: async (body: { kind: Exchange["kind"]; node: number; channel: number }) => {
-    const res = await fetch(`${API}/exchange`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(await errorText(res));
-    return (await res.json()) as Exchange;
-  },
+  exchange: (body: { kind: Exchange["kind"]; node: number; channel: number }) =>
+    request<Exchange>("/exchange", "POST", body),
   prefs: () => get<Prefs>("/prefs"),
   track: (nodeNum: number, hours = 24 * 7) => get<TrackPoint[]>(`/nodes/${nodeNum}/track?hours=${hours}`),
-  savePrefs: async (patch: PrefsPatch) => {
-    const res = await fetch(`${API}/prefs`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    if (!res.ok) throw new Error(await errorText(res));
-    return (await res.json()) as Prefs;
-  },
-  setFavorite: async (nodeNum: number, favorite: boolean) => {
-    const res = await fetch(`${API}/nodes/${nodeNum}/favorite`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ favorite }),
-    });
-    if (!res.ok) throw new Error((await res.text()) || res.statusText);
-    return res.json();
-  },
+  savePrefs: (patch: PrefsPatch) => request<Prefs>("/prefs", "PUT", patch),
+  setFavorite: (nodeNum: number, favorite: boolean) =>
+    request<unknown>(`/nodes/${nodeNum}/favorite`, "POST", { favorite }),
   clearPreview: () => get<Record<string, number>>("/clear"),
-  clearData: async () => {
-    const res = await fetch(`${API}/clear`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirm: "CLEAR" }),
-    });
-    if (!res.ok) throw new Error(await errorText(res));
-    return (await res.json()) as { removed: Record<string, number> };
-  },
-  resetCursor: async (key: string) => {
-    const res = await fetch(`${API}/clients/${encodeURIComponent(key)}/reset`, { method: "POST" });
-    if (!res.ok) throw new Error(res.statusText);
-    return res.json();
-  },
+  clearData: () => request<{ removed: Record<string, number> }>("/clear", "POST", { confirm: "CLEAR" }),
+  resetCursor: (key: string) => request<unknown>(`/clients/${encodeURIComponent(key)}/reset`, "POST"),
 };
 
 /** Re-run a fetch on mount, on demand, and whenever `deps` change. */
@@ -457,15 +421,21 @@ export function useResource<T>(load: () => Promise<T>, deps: unknown[]) {
   const [loading, setLoading] = useState(true);
   const loadRef = useRef(load);
   loadRef.current = load;
+  // Only the latest call may set state: an older, slower response would
+  // otherwise overwrite a newer one (e.g. after switching conversations).
+  const latest = useRef(0);
 
   const refresh = useCallback(async () => {
+    const call = ++latest.current;
     try {
-      setData(await loadRef.current());
+      const value = await loadRef.current();
+      if (call !== latest.current) return;
+      setData(value);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (call === latest.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (call === latest.current) setLoading(false);
     }
   }, []);
 

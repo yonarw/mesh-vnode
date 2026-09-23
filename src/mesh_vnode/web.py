@@ -602,14 +602,15 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
     # ----------------------------------------------------------------- static
 
     if WEBUI_DIST.is_dir():
-        api.mount("/assets", StaticFiles(directory=WEBUI_DIST / "assets"), name="assets")
+        dist = WEBUI_DIST.resolve()
+        api.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 
         @api.get("/{full_path:path}")
         def spa(full_path: str):
-            candidate = WEBUI_DIST / full_path
-            if full_path and candidate.is_file():
+            candidate = (dist / full_path).resolve()
+            if full_path and candidate.is_relative_to(dist) and candidate.is_file():
                 return FileResponse(candidate)
-            return FileResponse(WEBUI_DIST / "index.html")
+            return FileResponse(dist / "index.html")
     else:
 
         @api.get("/")

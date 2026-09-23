@@ -92,7 +92,7 @@ export async function maybeNotify(
   const body = m.emoji ? `reacted ${m.text ?? ""}` : (m.text ?? "");
   // One notification per conversation: a burst replaces itself instead of
   // stacking twenty banners.
-  const options: NotificationOptions = { body, tag: key, data: { hash: "#messages", conv: key } };
+  const options: NotificationOptions = { body, tag: key, data: { hash: `#messages/${key}` } };
   const reg = await registration();
   if (reg) await reg.showNotification(title, options);
   else new Notification(title, options);

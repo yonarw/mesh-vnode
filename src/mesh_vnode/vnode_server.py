@@ -73,6 +73,8 @@ class VNodeServer:
         self._server: asyncio.AbstractServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._listeners: list[Any] = []  # web UI push callbacks
+        self._reaper: asyncio.Task | None = None
+        self._handlers: set[asyncio.Task] = set()
         # What live traffic apps get, per category (protocol.FORWARD_CATEGORIES):
         # "all", "favorites" or "none". Set from the web UI's settings.
         self.forward_policy: dict[str, str] = {}
@@ -87,11 +89,17 @@ class VNodeServer:
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets or [])
         logger.info("vnode: virtual node listening on %s", addrs)
-        asyncio.create_task(self._idle_reaper())
+        self._reaper = asyncio.create_task(self._idle_reaper())
 
     async def stop(self) -> None:
+        if self._reaper is not None:
+            self._reaper.cancel()
         if self._server is not None:
             self._server.close()
+        # Since Python 3.12 wait_closed() also waits for every open connection.
+        self.disconnect_all()
+        await asyncio.gather(*self._handlers, return_exceptions=True)
+        if self._server is not None:
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
 
@@ -208,6 +216,10 @@ class VNodeServer:
         self._next_id += 1
         key = self._client_key(host, port)
         client = ClientSession(cid, key, f"{host}:{port}", writer)
+        task = asyncio.current_task()
+        if task is not None:
+            self._handlers.add(task)
+            task.add_done_callback(self._handlers.discard)
 
         row = self.db.get_or_create_client(key, label=host)
         client.cursor = int(row["last_seq"])

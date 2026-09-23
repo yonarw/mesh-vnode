@@ -24,7 +24,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -53,7 +53,12 @@ CREATE TABLE IF NOT EXISTS packets (
     rx_rssi      INTEGER,
     pki          INTEGER NOT NULL DEFAULT 0,
     origin       TEXT,               -- client key that sent it, NULL if from the mesh
-    raw          BLOB NOT NULL
+    raw          BLOB NOT NULL,
+    reply_id     INTEGER,            -- a reaction (emoji set) points at this packet id
+    emoji        INTEGER NOT NULL DEFAULT 0,
+    status       TEXT,               -- our messages: pending|sent|relayed|delivered|failed
+    status_detail TEXT,
+    status_at    INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS packets_dedup ON packets(from_num, packet_id);
 CREATE INDEX IF NOT EXISTS packets_rx_time ON packets(rx_time);
@@ -85,6 +90,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     latitude      REAL,
     longitude     REAL,
     altitude      INTEGER,
+    precision_bits INTEGER,        -- 32 = exact position
+    position_time INTEGER,
+    is_favorite   INTEGER NOT NULL DEFAULT 0,
+    is_ignored    INTEGER NOT NULL DEFAULT 0,
+    via_mqtt      INTEGER NOT NULL DEFAULT 0,
+    public_key    BLOB,
     updated_at    INTEGER NOT NULL
 );
 
@@ -200,25 +211,20 @@ CREATE TABLE IF NOT EXISTS prefs (
 """
 
 
-# Columns added after schema version 1: (table, column, declaration).
-ADDED_COLUMNS = [
+# Columns added before migrations were versioned; only databases older than
+# version 4 can lack them.
+LEGACY_COLUMNS = [
     ("nodes", "is_favorite", "INTEGER NOT NULL DEFAULT 0"),
     ("nodes", "is_ignored", "INTEGER NOT NULL DEFAULT 0"),
     ("nodes", "via_mqtt", "INTEGER NOT NULL DEFAULT 0"),
-    # Reactions are text packets with `emoji` set, pointing at `reply_id`.
+    ("nodes", "precision_bits", "INTEGER"),
+    ("nodes", "position_time", "INTEGER"),
+    ("nodes", "public_key", "BLOB"),
     ("packets", "reply_id", "INTEGER"),
     ("packets", "emoji", "INTEGER NOT NULL DEFAULT 0"),
-    # Delivery state of messages we sent: pending -> sent -> relayed ->
-    # delivered, or failed. NULL for messages received from the mesh.
     ("packets", "status", "TEXT"),
     ("packets", "status_detail", "TEXT"),
     ("packets", "status_at", "INTEGER"),
-    # How exactly a node shares its position (32 = exact), and when it was fixed.
-    ("nodes", "precision_bits", "INTEGER"),
-    ("nodes", "position_time", "INTEGER"),
-    # Needed to send a DM the way the phone app does (sealed to this key), so
-    # the app files it in the same conversation as its own.
-    ("nodes", "public_key", "BLOB"),
 ]
 
 # Delivery states in the order they may advance. A late "sent" must never
@@ -238,23 +244,35 @@ class Database:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
+            version = self._stored_version()
             self._conn.executescript(SCHEMA)
-            self._migrate()
+            self._migrate(version)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
 
-    def _migrate(self) -> None:
-        for table, column, decl in ADDED_COLUMNS:
-            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
-            if column not in existing:
-                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-        # Version 1 stored raw position/nodeinfo/telemetry packets too. They are
-        # never replayed and the store now keeps text only.
-        self._conn.execute("DELETE FROM packets WHERE portnum != 1")
-        self._backfill_reply_fields()
+    def _stored_version(self) -> int:
+        """The schema version on disk: current for a new file, 0 for one that
+        predates the version stamp."""
+        tables = {r[0] for r in self._conn.execute("SELECT name FROM sqlite_master")}
+        if "packets" not in tables:
+            return SCHEMA_VERSION
+        if "meta" not in tables:
+            return 0
+        row = self._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        return int(row[0]) if row else 0
+
+    def _migrate(self, version: int) -> None:
+        if version < 4:
+            for table, column, decl in LEGACY_COLUMNS:
+                existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            # Version 1 also stored position, node info and telemetry packets.
+            self._conn.execute("DELETE FROM packets WHERE portnum != 1")
+            self._backfill_reply_fields()
 
     def _backfill_reply_fields(self) -> None:
         """Fill reply_id/emoji for rows stored before those columns existed,
