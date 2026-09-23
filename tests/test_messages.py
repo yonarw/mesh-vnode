@@ -268,3 +268,9 @@ def test_reactions_do_not_count_as_the_last_message_of_a_chat(client):
 
 def test_web_sends_ask_for_an_ack_by_default():
     assert SendRequest(text="hi").want_ack is True
+
+
+def test_the_text_limit_counts_bytes_not_characters():
+    SendRequest(text="a" * 228)
+    with pytest.raises(ValueError):
+        SendRequest(text="ä" * 115)

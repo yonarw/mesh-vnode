@@ -123,9 +123,7 @@ def config_file() -> Path | None:
     return path if path.is_file() else None
 
 
-def _file_source(
-    settings_cls: type[BaseSettings], path: Path
-) -> PydanticBaseSettingsSource:
+def _file_source(settings_cls: type[BaseSettings], path: Path) -> PydanticBaseSettingsSource:
     """YAML or JSON, by suffix. Anything else is read as JSON, which is what
     /data/options.json is - the Supervisor writes it without an extension rule."""
     if path.suffix.lower() in (".yaml", ".yml"):

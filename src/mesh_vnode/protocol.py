@@ -8,7 +8,7 @@ synthesise itself (config_complete, queue status).
 from __future__ import annotations
 
 import contextlib
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from google.protobuf.message import Message
 from meshtastic.protobuf import admin_pb2, config_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
@@ -29,13 +29,13 @@ PORT_TRACEROUTE = portnums_pb2.PortNum.TRACEROUTE_APP  # 70
 # want_response set, the receiving node answers on the same port. Everything
 # here can be asked of one node from the web UI, and recognised when another
 # node asks it of ours.
-EXCHANGE_PORTS = {
+ExchangeKind = Literal["traceroute", "position", "telemetry", "nodeinfo"]
+EXCHANGE_PORTS: dict[ExchangeKind, int] = {
     "traceroute": PORT_TRACEROUTE,
     "position": PORT_POSITION,
     "telemetry": PORT_TELEMETRY,
     "nodeinfo": PORT_NODEINFO,
 }
-EXCHANGE_KINDS = tuple(EXCHANGE_PORTS)
 
 # Ports whose raw packets are kept. Only text: it is what gets replayed, and on
 # a busy mesh everything else is noise. A real node here heard ~75 position and
@@ -45,17 +45,6 @@ EXCHANGE_KINDS = tuple(EXCHANGE_PORTS)
 # packet is counted per hour in `traffic`.
 STORED_PORTNUMS = (PORT_TEXT,)
 REPLAY_PORTNUMS = (PORT_TEXT,)
-
-# Ports a downstream client is not allowed to push upstream unless
-# VNODE_ALLOW_ADMIN is set. Admin packets reconfigure the physical node, which an
-# app reaching it through a proxy has no business doing.
-#
-# MeshMonitor blocks 6 and 8 and labels 8 "NODEINFO_APP" in a comment, but 8 is
-# WAYPOINT_APP; NODEINFO_APP is 4. Their block list therefore stops waypoints and
-# leaves node info alone. Node info is how a node's name reaches the rest of the
-# mesh and waypoints are ordinary user content, so neither is blocked here.
-# MeshMonitor: https://github.com/Yeraze/meshmonitor
-BLOCKED_PORTNUMS = (PORT_ADMIN,)
 
 # want_config_id nonces with special meaning in the firmware's PhoneAPI:
 # https://github.com/meshtastic/firmware/blob/3468af94aa0f79e93c9bf041244bf230161fc704/src/mesh/PhoneAPI.cpp

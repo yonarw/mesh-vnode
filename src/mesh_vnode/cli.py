@@ -15,6 +15,7 @@ from . import protocol as proto
 from .config import Settings, config_file, load_settings
 from .db import Database
 from .framing import FrameDecoder, encode_frame
+from .logging_setup import configure
 
 app = typer.Typer(
     add_completion=False,
@@ -22,15 +23,7 @@ app = typer.Typer(
 )
 
 
-def _setup_logging(level: str) -> None:
-    from .logging_setup import configure
-
-    configure(level=level)
-
-
 def _settings(**kw) -> Settings:
-    from .logging_setup import configure
-
     s = load_settings(**kw)
     configure(
         level=s.log_level,
@@ -71,7 +64,6 @@ def run(
         replay_mode=replay_mode,
         log_level=log_level,
     )
-    # log_config=None keeps uvicorn on our handlers and format instead of its own.
     debug = s.log_level.upper() == "DEBUG"
     # log_config=None keeps uvicorn on our handlers and format. The access log
     # is one line per web-UI poll, so it is off unless debugging: uvicorn resets
@@ -110,7 +102,7 @@ def capture(
         which = fr.WhichOneof("payload_variant")
         if which == "packet" and fr.packet.HasField("decoded"):
             port = int(fr.packet.decoded.portnum)
-            note = f" text={fr.packet.decoded.payload[:80]!r}" if port == 1 else ""
+            note = f" text={fr.packet.decoded.payload[:80]!r}" if port == proto.PORT_TEXT else ""
             typer.echo(
                 f"[{time.strftime('%H:%M:%S')}] packet id={fr.packet.id} "
                 f"from={proto.node_id(fr.packet.__getattribute__('from'))} "
@@ -151,7 +143,7 @@ def fakenode(
     """Run a fake node on TCP so the service can be tested without hardware."""
     from .fakenode import FakeNode
 
-    _setup_logging("INFO")
+    configure(level="INFO")
     asyncio.run(FakeNode(host, port, interval).serve())
 
 
@@ -172,7 +164,7 @@ def probe(
 
     from meshtastic.protobuf import mesh_pb2
 
-    _setup_logging("INFO")
+    configure(level="INFO")
     cfg_nonce = nonce or random.randint(1, 0xFFFFFFF0)
 
     async def main() -> None:
@@ -195,9 +187,9 @@ def probe(
             except TimeoutError:
                 if send and not sent:
                     pkt = mesh_pb2.ToRadio()
-                    pkt.packet.to = 0xFFFFFFFF
+                    pkt.packet.to = proto.BROADCAST_NUM
                     pkt.packet.id = random.randint(1, 0xFFFFFFF0)
-                    pkt.packet.decoded.portnum = 1
+                    pkt.packet.decoded.portnum = proto.PORT_TEXT
                     pkt.packet.decoded.payload = send.encode()
                     pkt.packet.want_ack = True
                     writer.write(encode_frame(pkt.SerializeToString()))
@@ -215,7 +207,7 @@ def probe(
                 counts[which] = counts.get(which, 0) + 1
                 if which == "packet" and fr.packet.HasField("decoded"):
                     portnum = int(fr.packet.decoded.portnum)
-                    if portnum == 1:
+                    if portnum == proto.PORT_TEXT:
                         text = fr.packet.decoded.payload.decode("utf-8", "replace")
                         texts.append(text)
                         typer.echo(

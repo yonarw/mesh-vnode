@@ -2,9 +2,8 @@
 
 ```sh
 uv sync
-uv run pytest                 # no hardware needed
-uv run ruff check src tests
-npm --prefix webui run lint   # eslint + prettier --check; `run format` fixes formatting
+make check                    # ruff, pytest, tsc, eslint, prettier; no hardware needed
+make fix                      # apply what the linters and formatters can fix
 npm --prefix webui run dev    # UI with hot reload, proxies /api to :8080
 ```
 

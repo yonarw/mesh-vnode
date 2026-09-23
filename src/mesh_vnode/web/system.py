@@ -7,7 +7,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
 from ..app import VNodeApp
@@ -24,7 +24,6 @@ MAP_STYLES: dict[str, tuple[str, ...]] = {
     "openfreemap": ("dark", "liberty", "bright", "positron", "fiord"),
     "carto": ("dark-matter", "positron", "voyager"),
 }
-MapStyle = Literal["dark", "liberty", "bright", "positron", "fiord", "dark-matter", "voyager"]
 DisplayMode = Literal["graph", "number", "hidden"]
 
 
@@ -63,13 +62,20 @@ class PrefsPatch(BaseModel):
     upstream_port: int | None = Field(default=None, ge=1, le=65535)
     carto_api_key: str | None = Field(default=None, max_length=200)
     map_provider: MapProvider | None = None
-    map_style: MapStyle | None = None
+    map_style: str | None = None
     # Conversation keys: "ch:<index>" or "dm:<node_num>".
     muted: list[str] | None = None
     # Telemetry widget id -> how it is shown.
     telemetry_display: dict[str, DisplayMode] | None = None
     allow_admin: bool | None = None
     app_forward: AppForward | None = None
+
+    @field_validator("map_style")
+    @classmethod
+    def _known_style(cls, style: str | None) -> str | None:
+        if style is not None and not any(style in styles for styles in MAP_STYLES.values()):
+            raise ValueError(f"unknown map style: {style}")
+        return style
 
 
 class ClearRequest(BaseModel):

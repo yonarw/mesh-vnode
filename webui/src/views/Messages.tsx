@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  MAX_TEXT_BYTES,
   api,
   useResource,
   type Channel,
@@ -757,10 +758,11 @@ function Composer({ target, onSent }: { target: Target; onSent: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const left = MAX_TEXT_BYTES - new TextEncoder().encode(text.trim()).length;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || left < 0) return;
     setBusy(true);
     setError(null);
     try {
@@ -789,18 +791,22 @@ function Composer({ target, onSent }: { target: Target; onSent: () => void }) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          maxLength={200}
           placeholder={target.kind === "channel" ? `Message #${target.name}` : `Message @${target.name}`}
           className="flex-1 rounded-full border border-ink-700 bg-ink-800 px-4 py-2.5 text-sm text-mist-200 outline-none placeholder:text-mist-400 focus:border-accent-400/60"
         />
         <button
           type="submit"
-          disabled={busy || !text.trim()}
+          disabled={busy || !text.trim() || left < 0}
           className="rounded-full bg-accent-400/20 px-5 py-2.5 text-sm font-semibold text-accent-400 disabled:opacity-40"
         >
           {busy ? "…" : "Send"}
         </button>
       </div>
+      {left < 30 && (
+        <p className={`mt-1 px-4 text-[11px] ${left < 0 ? "text-alert-400" : "text-mist-400"}`}>
+          {left < 0 ? `${-left} bytes too long for one message` : `${left} bytes left`}
+        </p>
+      )}
     </form>
   );
 }

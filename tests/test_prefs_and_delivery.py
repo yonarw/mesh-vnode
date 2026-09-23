@@ -157,6 +157,7 @@ def test_switching_provider_is_stored(api):
     prefs = http.put("/api/prefs", json={"map_provider": "carto", "map_style": "voyager"}).json()
     assert (prefs["map_provider"], prefs["map_style"]) == ("carto", "voyager")
     assert http.put("/api/prefs", json={"map_provider": "nowhere"}).status_code == 422
+    assert http.put("/api/prefs", json={"map_style": "sepia"}).status_code == 422
 
 
 def test_resetting_the_address_falls_back_to_the_environment(api):

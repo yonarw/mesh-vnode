@@ -16,6 +16,5 @@ services:
       VNODE_UPSTREAM_HOST: "${VNODE_UPSTREAM_HOST:?set this to your node's hostname or IP}"
       VNODE_UPSTREAM_PORT: "4403"
       VNODE_REPLAY_MODE: "cursor"
-      VNODE_REPLAY_POSITION: "after_complete"
       VNODE_RETENTION_DAYS: "30"
       VNODE_LOG_LEVEL: "INFO"

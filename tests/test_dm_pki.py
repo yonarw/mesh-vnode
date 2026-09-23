@@ -138,11 +138,11 @@ def test_a_reaction_goes_out_as_a_text_packet_with_emoji_set(keyed):
     """The wire format of a tapback: the payload is the emoji, `emoji` marks it
     as a reaction rather than a one-character message, and `reply_id` says which
     message it belongs to."""
-    keyed.send_text("\U0001F44D", destination=FRIEND, reply_id=0x123, emoji=True)
+    keyed.send_text("\U0001f44d", destination=FRIEND, reply_id=0x123, emoji=True)
     packet, destination, kw = keyed.iface.packets[0]
     assert packet.decoded.emoji == 1
     assert packet.decoded.reply_id == 0x123
-    assert packet.decoded.payload.decode() == "\U0001F44D"
+    assert packet.decoded.payload.decode() == "\U0001f44d"
     assert packet.decoded.portnum == proto.PORT_TEXT
     assert destination == FRIEND
     # Sealed like any other DM to a node whose key we hold.
@@ -167,11 +167,11 @@ def test_a_reaction_is_folded_into_the_message_it_targets(tmp_path):
     sent = http.post("/api/send", json={"text": "hi", "channel": 0}).json()
     res = http.post(
         "/api/send",
-        json={"text": "\U0001F44D", "channel": 0, "emoji": True, "reply_id": sent["packet_id"]},
+        json={"text": "\U0001f44d", "channel": 0, "emoji": True, "reply_id": sent["packet_id"]},
     )
     assert res.status_code == 200
 
     messages = http.get("/api/messages?channel=0").json()
     assert [m["text"] for m in messages] == ["hi"]
     [target] = [m for m in messages if m["packet_id"] == sent["packet_id"]]
-    assert [r["emoji"] for r in target["reactions"]] == ["\U0001F44D"]
+    assert [r["emoji"] for r in target["reactions"]] == ["\U0001f44d"]

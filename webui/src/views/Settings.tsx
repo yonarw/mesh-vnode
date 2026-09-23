@@ -1,14 +1,6 @@
 import { useEffect, useState } from "react";
-import {
-  api,
-  useResource,
-  type AppForward,
-  type Channel,
-  type Conversations,
-  type MapProvider,
-  type MapStyle,
-  type Status,
-} from "../api";
+import { api, useResource, type AppForward, type Channel, type Conversations, type Status } from "../api";
+import { MAP_PROVIDERS, mapProvider } from "../maps";
 import { notifyState, setNotify, type NotifyState } from "../notify";
 import { usePrefs } from "../prefs";
 import { Card, Chip, Empty, Pill, Segmented, Sheet, nodeIdHex } from "../ui";
@@ -246,34 +238,6 @@ function AppForwardCard() {
   );
 }
 
-/** Per provider: what to call it, its styles, and whether it wants a key.
- *  Switching provider also sends a style that provider has - the stored pair
- *  stays one the backend can serve back unchanged. */
-const PROVIDERS: { id: MapProvider; label: string; note: string; styles: { id: MapStyle; label: string }[] }[] = [
-  {
-    id: "openfreemap",
-    label: "OpenFreeMap",
-    note: "OpenStreetMap data, free, no key and no account.",
-    styles: [
-      { id: "dark", label: "Dark" },
-      { id: "liberty", label: "Liberty" },
-      { id: "bright", label: "Bright" },
-      { id: "positron", label: "Positron (light)" },
-      { id: "fiord", label: "Fiord" },
-    ],
-  },
-  {
-    id: "carto",
-    label: "CARTO",
-    note: "Loads without a key, but CARTO may mark or throttle the tiles.",
-    styles: [
-      { id: "dark-matter", label: "Dark Matter" },
-      { id: "positron", label: "Positron (light)" },
-      { id: "voyager", label: "Voyager" },
-    ],
-  },
-];
-
 function MapCard() {
   const { prefs } = usePrefs();
   const savedKey = prefs!.carto_api_key;
@@ -282,13 +246,13 @@ function MapCard() {
   const saver = useSaver();
   useEffect(() => setKey(savedKey), [savedKey]);
 
-  const current = PROVIDERS.find((p) => p.id === prefs!.map_provider) ?? PROVIDERS[0];
+  const current = mapProvider(prefs!.map_provider);
 
   return (
     <Card title="Map">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-xs text-mist-400">Basemap</span>
-        {PROVIDERS.map((p) => (
+        {MAP_PROVIDERS.map((p) => (
           <Chip
             key={p.id}
             on={current.id === p.id}

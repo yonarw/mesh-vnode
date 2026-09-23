@@ -1,8 +1,11 @@
 /** Typed wrapper over the vnode HTTP API, plus the live-event socket. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { MapProvider, MapStyle } from "./maps";
 
 export const BROADCAST = 4294967295;
+/** What one text packet carries; the backend checks the same limit. */
+export const MAX_TEXT_BYTES = 228;
 
 /** Where this app is served from: "/" standalone, "/api/hassio_ingress/<token>/"
  *  as a Home Assistant add-on, any prefix behind a reverse proxy.
@@ -237,8 +240,6 @@ export interface MessageDetails extends Omit<Message, "reactions"> {
   delivery: DeliveryEvent[];
 }
 
-export type MapProvider = "openfreemap" | "carto";
-export type MapStyle = "dark" | "liberty" | "bright" | "positron" | "fiord" | "dark-matter" | "voyager";
 export type DisplayMode = "graph" | "number" | "hidden";
 
 export interface Prefs {
@@ -400,7 +401,7 @@ export const api = {
     get<Exchange[]>(`/exchanges?limit=${limit}${node === undefined ? "" : `&node=${node}`}`),
   /** Ask one node for something. The answer arrives later, through the socket. */
   exchange: (body: { kind: Exchange["kind"]; node: number; channel: number }) =>
-    request<Exchange>("/exchange", "POST", body),
+    request<Exchange & { cooldown_s: number }>("/exchange", "POST", body),
   prefs: () => get<Prefs>("/prefs"),
   track: (nodeNum: number, hours = 24 * 7) => get<TrackPoint[]>(`/nodes/${nodeNum}/track?hours=${hours}`),
   savePrefs: (patch: PrefsPatch) => request<Prefs>("/prefs", "PUT", patch),

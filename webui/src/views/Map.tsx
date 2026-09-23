@@ -7,7 +7,8 @@
 import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, useResource, type MapProvider, type MapStyle, type Node, type TrackPoint } from "../api";
+import { api, useResource, type Node, type TrackPoint } from "../api";
+import { mapProvider } from "../maps";
 import { useTick } from "../live";
 import { usePrefs } from "../prefs";
 import {
@@ -72,23 +73,6 @@ const AGE_COLORS = [
   ["get", "age"],
   ...AGE_RAMP.flat(),
 ] as maplibregl.ExpressionSpecification;
-
-/** The two basemap sources. OpenFreeMap asks for nothing, so it is the default;
- *  CARTO is kept because its styles are nicer and some already have a key.
- *  `attribution` is only set where the style itself carries none - CARTO's
- *  styles do, and a second copy would show up twice. */
-const PROVIDERS: Record<MapProvider, { styleUrl: (s: MapStyle) => string; attribution?: string }> = {
-  openfreemap: {
-    styleUrl: (style) => `https://tiles.openfreemap.org/styles/${style}`,
-    attribution:
-      '<a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> · ' +
-      '<a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> · ' +
-      '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
-  },
-  carto: {
-    styleUrl: (style) => `https://basemaps.cartocdn.com/gl/${style}-gl-style/style.json`,
-  },
-};
 
 /** CARTO's style, tiles, sprites and glyphs all come from *.basemaps.cartocdn.com
  *  and all take the key as `?key=`. Any other host is left alone, so the key is
@@ -282,7 +266,7 @@ export default function MapView({
   useEffect(() => {
     if (!container.current || !prefs) return;
     setMapError(null);
-    const { styleUrl, attribution } = PROVIDERS[provider];
+    const { styleUrl, attribution } = mapProvider(provider);
     const m = new maplibregl.Map({
       container: container.current,
       style: withKey(styleUrl(style), key),

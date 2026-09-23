@@ -27,10 +27,6 @@ const KINDS: { kind: Exchange["kind"]; label: string; hint: string }[] = [
   { kind: "nodeinfo", label: "Node info", hint: "Ask for the name, hardware and role" },
 ];
 
-// The firmware rate-limits these and every one of them costs everyone in range
-// airtime, so the button stays down for a while after it was pressed.
-const COOLDOWN_MS = 30_000;
-
 export default function NodeSheet({
   nodeNum,
   fallback,
@@ -68,8 +64,8 @@ export default function NodeSheet({
     setBusy(kind);
     setError(null);
     try {
-      await api.exchange({ kind, node: nodeNum, channel });
-      setAsked((a) => ({ ...a, [kind]: Date.now() }));
+      const { cooldown_s } = await api.exchange({ kind, node: nodeNum, channel });
+      setAsked((a) => ({ ...a, [kind]: Date.now() + cooldown_s * 1000 }));
       void exchanges.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -79,9 +75,8 @@ export default function NodeSheet({
   };
 
   const cooling = (kind: Exchange["kind"]) => {
-    const since = asked[kind];
-    if (since === undefined) return 0;
-    return Math.max(0, Math.ceil((COOLDOWN_MS - (now - since)) / 1000));
+    const until = asked[kind];
+    return until === undefined ? 0 : Math.max(0, Math.ceil((until - now) / 1000));
   };
 
   return (

@@ -78,11 +78,6 @@ def configure(
     logging.getLogger("meshtastic").setLevel(
         getattr(logging, meshtastic_level.upper(), logging.WARNING)
     )
-    # uvicorn's access log is one line per web-UI poll; useful only when the web
-    # UI itself is the problem.
-    if root_level > logging.DEBUG:
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
     if trace_frames:
         logging.getLogger(__name__).info(
             "vnode: frame tracing is ON - every frame on both sockets is logged"

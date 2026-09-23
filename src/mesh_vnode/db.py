@@ -578,16 +578,6 @@ class Database:
 
     # ---------------------------------------------------------- config frames
 
-    def store_config_frame(self, key: str, kind: str, ord_: int, raw: bytes) -> None:
-        self._exec(
-            """
-            INSERT INTO config_frames(key, kind, ord, raw, updated_at) VALUES (?,?,?,?,?)
-            ON CONFLICT(key) DO UPDATE SET kind=excluded.kind, ord=excluded.ord,
-                                           raw=excluded.raw, updated_at=excluded.updated_at
-            """,
-            (key, kind, ord_, raw, _now()),
-        )
-
     def config_frames(self, kinds: Iterable[str] | None = None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM config_frames"
         params: list[Any] = []

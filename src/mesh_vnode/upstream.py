@@ -371,11 +371,6 @@ class Upstream:
             "last_error": self.last_error,
         }
 
-    def config_ready(self) -> bool:
-        """True once a full handshake has been captured (now or in a past run)."""
-        frames = self.db.config_frames()
-        return any(f["kind"] == "my_info" for f in frames)
-
     # -------------------------------------------------------------- send path
 
     def send_to_radio_bytes(self, to_radio_bytes: bytes) -> None:

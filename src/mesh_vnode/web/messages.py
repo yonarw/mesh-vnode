@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import protocol as proto
 from ..app import VNodeApp
@@ -15,14 +15,26 @@ from .common import Names, Vnode, require_upstream, rows
 router = APIRouter()
 
 
+# What fits in one text packet's payload: the firmware's 233-byte Data limit
+# minus the port number and the payload's own field header.
+MAX_TEXT_BYTES = 228
+
+
 class SendRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=228)
+    text: str = Field(min_length=1)
     channel: int = 0
     to: int | str = proto.BROADCAST_NUM
     want_ack: bool = True
     # A reaction: `text` is the emoji and `reply_id` the packet it reacts to.
     reply_id: int | None = None
     emoji: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def _fits_one_packet(cls, text: str) -> str:
+        if len(text.encode()) > MAX_TEXT_BYTES:
+            raise ValueError(f"longer than {MAX_TEXT_BYTES} bytes")
+        return text
 
 
 def lora_config(vnode: VNodeApp):

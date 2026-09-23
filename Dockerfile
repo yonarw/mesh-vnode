@@ -7,13 +7,13 @@
 # The cost is that the cross-built arm64 image runs this stage under QEMU in CI.
 FROM node:22-alpine AS webui
 WORKDIR /build
-COPY webui/package.json webui/package-lock.json* ./
-RUN npm ci || npm install
+COPY webui/package.json webui/package-lock.json ./
+RUN npm ci
 COPY webui/ ./
 RUN npm run build
 
 FROM python:3.12-slim
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
@@ -41,6 +41,6 @@ VOLUME ["/data"]
 EXPOSE 4404 8080
 
 HEALTHCHECK --interval=60s --timeout=5s --start-period=20s \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=4).status==200 else 1)"
+  CMD python -c "import os,sys,urllib.request; port=os.environ.get('VNODE_WEB_PORT','8080'); sys.exit(urllib.request.urlopen(f'http://127.0.0.1:{port}/api/status', timeout=4).status != 200)"
 
 CMD ["mesh-vnode", "run"]

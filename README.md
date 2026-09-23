@@ -138,6 +138,5 @@ it line by line.
 
 ## Development
 
-`uv run pytest`, `uv run ruff check src tests`, and a fake node plus a fake phone app so
-the whole thing can be exercised with no hardware attached:
+Tests, linting, and a fake node plus a fake phone app to run it all without hardware:
 **[docs/development.md](docs/development.md)**.

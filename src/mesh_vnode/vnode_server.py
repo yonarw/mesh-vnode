@@ -169,11 +169,9 @@ class VNodeServer:
 
     def _deliver(self, client: ClientSession, raw: bytes, seq: int | None) -> None:
         if not client.live:
-            # A client that connects and never asks for config would otherwise
-            # grow this without bound. The dropped frames are still in the store
-            # and come back through the cursor replay.
-            # Dropping past the cap is safe: anything with a seq is in the
-            # store and comes back through the cursor replay a moment later.
+            # Capped, for a client that connects and never asks for config.
+            # Anything dropped with a seq is in the store and comes back
+            # through the cursor replay.
             if len(client.pending) < self.MAX_PENDING:
                 client.pending.append((raw, seq))
             return

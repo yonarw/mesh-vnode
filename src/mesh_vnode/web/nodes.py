@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -17,7 +17,12 @@ from .common import Names, Vnode, require_upstream, rows
 router = APIRouter()
 
 # A traceroute is slow by nature: every hop repeats it, and the answer walks back.
-EXCHANGE_TIMEOUTS = {"traceroute": 180, "position": 90, "telemetry": 90, "nodeinfo": 90}
+EXCHANGE_TIMEOUTS: dict[proto.ExchangeKind, int] = {
+    "traceroute": 180,
+    "position": 90,
+    "telemetry": 90,
+    "nodeinfo": 90,
+}
 # The firmware does not rate-limit requests from the phone API, so this is all
 # that stands between a held-down button and a node's airtime.
 EXCHANGE_COOLDOWN_S = 30
@@ -28,7 +33,7 @@ class FavoriteRequest(BaseModel):
 
 
 class ExchangeRequest(BaseModel):
-    kind: Literal["traceroute", "position", "telemetry", "nodeinfo"]
+    kind: proto.ExchangeKind
     node: int
     # A node that does not have this channel cannot read the question.
     channel: int = Field(0, ge=0, le=7)
@@ -103,4 +108,4 @@ async def exchange(vnode: Vnode, req: ExchangeRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(502, f"request failed: {exc}") from exc
-    return exchange_view([row], Names(vnode.db))[0]
+    return {**exchange_view([row], Names(vnode.db))[0], "cooldown_s": EXCHANGE_COOLDOWN_S}
