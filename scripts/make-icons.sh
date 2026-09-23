@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates every icon in the repo from one master image.
 #
-#   ./make_icons.sh [master.png]     # default: docs/icon_large.png
+#   scripts/make-icons.sh [master.png]     # default: docs/images/icon-master.png
 #
 # Nothing here is hand-edited: replace the master with a larger export and run
 # this again. The master should be square-ish and at least 512px on its long
@@ -17,9 +17,9 @@
 #                                       background - so this one gets BG.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")"
+cd "$(dirname "$(readlink -f "$0")")/.."
 
-MASTER="${1:-docs/icon_large.png}"
+MASTER="${1:-docs/images/icon-master.png}"
 BG="#0b1120"   # matches <meta name="theme-color"> in webui/index.html
 
 [[ -f "$MASTER" ]] || { echo "no master image at $MASTER" >&2; exit 1; }

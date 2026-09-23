@@ -2,8 +2,8 @@
 # Package this checkout as a local Home Assistant add-on, for testing without
 # publishing anything.
 #
-#   ./addon_local.sh         -> build/mesh_vnode/      (a folder)
-#   ./addon_local.sh --zip   -> build/mesh_vnode.zip
+#   scripts/package-addon.sh         -> build/mesh_vnode/      (a folder)
+#   scripts/package-addon.sh --zip   -> build/mesh_vnode.zip
 #
 # Put the folder in /addons on the Home Assistant machine, by whichever route
 # you already have: the Samba add-on shares it as \\<ha>\addons (drag it in),
@@ -19,7 +19,7 @@
 # the copy and shadow what the build produces.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")"
+cd "$(dirname "$(readlink -f "$0")")/.."
 
 OUT="build/mesh_vnode"
 rm -rf "$OUT" "$OUT.zip"
@@ -29,7 +29,7 @@ tar -c \
     --exclude=.git --exclude=.venv --exclude=data --exclude=node_modules \
     --exclude=__pycache__ --exclude=.pytest_cache --exclude=.ruff_cache \
     --exclude=wip --exclude=.env --exclude=dist --exclude=build \
-    --exclude=sync_to_pi.sh --exclude=addon_local.sh \
+    --exclude=sync_to_pi.sh --exclude=scripts \
     --exclude=addon --exclude=.github --exclude=repository.yaml \
     -f - . | tar -x -C "$OUT" -f -
 

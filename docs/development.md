@@ -23,6 +23,9 @@ src/mesh_vnode/
 webui/              Vite + React + TypeScript, Tailwind, MapLibre, Recharts
 tests/              pytest; no hardware, no network
 addon/              Home Assistant add-on manifest and its documentation
+deploy/             systemd unit for a standalone install
+docs/               documentation; images/ holds the icon master and badges
+scripts/            version bump and check, icon generation, local add-on packaging
 ```
 
 ## Commands
@@ -81,12 +84,12 @@ npm --prefix webui run build
 ## Packaging the add-on locally
 
 A **local add-on** needs no repository, no registry and no image tag: the Supervisor builds
-any folder it finds in `/addons`. `./addon_local.sh` packages a checkout as one, which is
+any folder it finds in `/addons`. `scripts/package-addon.sh` packages a checkout as one, which is
 how to try add-on changes before publishing an image.
 
 ```sh
-./addon_local.sh          # -> build/mesh_vnode/
-./addon_local.sh --zip    # -> build/mesh_vnode.zip
+scripts/package-addon.sh         # -> build/mesh_vnode/
+scripts/package-addon.sh --zip   # -> build/mesh_vnode.zip
 ```
 
 Copy the folder to `/addons` on the Home Assistant machine - the *Samba* add-on shares it

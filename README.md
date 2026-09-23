@@ -2,7 +2,7 @@
 
 A virtual node that remembers messages, for use with Meshtastic® meshes.
 
-<a href="https://meshtastic.org"><img src="docs/m-powered.png" alt="Meshtastic Powered" height="22"></a>
+<a href="https://meshtastic.org"><img src="docs/images/m-powered.png" alt="Meshtastic Powered" height="22"></a>
 
 It sits between your Meshtastic node and the apps that talk to it: it holds the node's
 single TCP connection, stores what it hears in SQLite, and presents itself to the
