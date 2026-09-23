@@ -13,7 +13,7 @@
 # the two disagree.
 name: Mesh vnode
 slug: mesh_vnode
-version: "0.2.2"
+version: "0.2.3"
 description: A virtual node that remembers messages, for use with Meshtastic meshes
 url: https://github.com/yonarw/mesh-vnode
 image: ghcr.io/yonarw/mesh-vnode
