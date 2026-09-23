@@ -208,6 +208,12 @@ def position_quality(pos: mesh_pb2.Position) -> dict[str, Any] | None:
     return out
 
 
+# How long since a node was last heard still counts as online. The firmware's
+# own num_online_nodes uses the same two hours (NUM_ONLINE_SECS), so counting
+# ours the same way makes the two comparable.
+ONLINE_WINDOW_S = 2 * 3600
+
+
 def decode_telemetry(packet: mesh_pb2.MeshPacket) -> tuple[str, dict[str, Any]] | None:
     """Return (kind, values) for a telemetry packet."""
     if not packet.HasField("decoded") or packet.decoded.portnum != PORT_TELEMETRY:
@@ -218,6 +224,15 @@ def decode_telemetry(packet: mesh_pb2.MeshPacket) -> tuple[str, dict[str, Any]] 
     except Exception:
         return None
     variant = tel.WhichOneof("variant")
+    if variant is None:
+        return None
+    # A node asking another for telemetry names the variant it wants and leaves
+    # it empty (want_response carries the question). That is not a reading:
+    # stored as one it would chart as a node with no uptime, no counters and no
+    # nodes known, and the packet-rate derivation would then read the next real
+    # sample as a jump from zero.
+    if not getattr(tel, variant).ByteSize():
+        return None
     if variant == "device_metrics":
         m = tel.device_metrics
         return "device", {
@@ -340,6 +355,22 @@ def decode_routing(packet: mesh_pb2.MeshPacket) -> tuple[int, str] | None:
     except Exception:
         return None
     return request_id, mesh_pb2.Routing.Error.Name(routing.error_reason)
+
+
+def heard_fields(packet: mesh_pb2.MeshPacket) -> dict[str, Any]:
+    """What a received packet says about how far away its sender is.
+
+    `hop_start` is the hop limit the sender set out with and `hop_limit` what is
+    left, so the difference is how many hops the packet took. Two cases say
+    nothing about distance and leave the stored value alone: firmware older than
+    2.2 leaves `hop_start` at 0, and a packet that reached us over MQTT was
+    injected with its hop counters untouched, which would read as a direct
+    neighbour however far away the node really is.
+    """
+    fields: dict[str, Any] = {"via_mqtt": int(packet.via_mqtt)}
+    if packet.hop_start and packet.hop_limit <= packet.hop_start and not packet.via_mqtt:
+        fields["hops_away"] = packet.hop_start - packet.hop_limit
+    return fields
 
 
 def ack_details(packet: mesh_pb2.MeshPacket) -> dict[str, Any]:
@@ -581,9 +612,10 @@ def refreshed_node_info(
     info.last_heard = packet.rx_time or now
     if packet.rx_snr:
         info.snr = packet.rx_snr
-    if packet.hop_start:
-        info.hops_away = packet.hop_start - packet.hop_limit
-    info.via_mqtt = packet.via_mqtt
+    heard = heard_fields(packet)
+    if "hops_away" in heard:
+        info.hops_away = heard["hops_away"]
+    info.via_mqtt = bool(heard["via_mqtt"])
     if packet.HasField("decoded"):
         info.channel = packet.channel
     return fr.SerializeToString()

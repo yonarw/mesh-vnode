@@ -245,6 +245,10 @@ export interface Prefs {
   upstream_host: string;
   upstream_port: number;
   upstream_source: "command line" | "web ui" | "environment";
+  /** "host:port" that dropping the web-UI setting would fall back to. */
+  upstream_fallback: string;
+  /** Whether anything actually set that, or it is only the built-in default. */
+  upstream_fallback_set: boolean;
   carto_api_key: string;
   /** Where the basemap comes from. OpenFreeMap needs no key. */
   map_provider: MapProvider;
@@ -265,7 +269,12 @@ export interface AppForward {
   other: "all" | "none";
 }
 
-export type PrefsPatch = Partial<Omit<Prefs, "upstream_source" | "upstream_host" | "upstream_port">> & {
+export type PrefsPatch = Partial<
+  Omit<
+    Prefs,
+    "upstream_source" | "upstream_host" | "upstream_port" | "upstream_fallback" | "upstream_fallback_set"
+  >
+> & {
   upstream_host?: string | null;
   upstream_port?: number | null;
 };
@@ -304,6 +313,9 @@ export interface TelemetrySample {
   noise_floor?: number | null;
   num_online_nodes?: number | null;
   num_total_nodes?: number | null;
+  /** Counted here rather than by the radio, over the same two-hour window. */
+  num_heard_here?: number | null;
+  num_nodes_here?: number | null;
   rx_per_hour?: number | null;
   tx_per_hour?: number | null;
   relay_per_hour?: number | null;

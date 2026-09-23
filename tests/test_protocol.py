@@ -107,3 +107,47 @@ def test_an_admin_payload_newer_than_the_package_is_not_read_only():
 
 def test_only_get_requests_count_as_read_only():
     assert all(v.startswith("get_") for v in proto.READ_ONLY_ADMIN_VARIANTS)
+
+
+def _heard(hop_start, hop_limit, via_mqtt=False):
+    pkt = mesh_pb2.MeshPacket()
+    pkt.hop_start = hop_start
+    pkt.hop_limit = hop_limit
+    pkt.via_mqtt = via_mqtt
+    return proto.heard_fields(pkt)
+
+
+def test_heard_fields_counts_hops_travelled():
+    assert _heard(7, 2)["hops_away"] == 5
+    assert _heard(3, 3)["hops_away"] == 0
+
+
+def test_heard_fields_leaves_hops_alone_when_they_say_nothing():
+    # Pre-2.2 firmware sends no hop_start, MQTT injects the counters untouched,
+    # and hop_limit above hop_start is a packet we cannot read a distance from.
+    assert "hops_away" not in _heard(0, 3)
+    assert "hops_away" not in _heard(3, 3, via_mqtt=True)
+    assert "hops_away" not in _heard(3, 5)
+    assert _heard(3, 3, via_mqtt=True)["via_mqtt"] == 1
+
+
+def test_refreshed_node_info_records_hops_from_a_live_packet():
+    pkt = _text_packet(frm=0x1234)  # hop_start 3, hop_limit 2
+    raw = mesh_pb2.FromRadio()
+    raw.node_info.num = 0x1234
+    raw.node_info.hops_away = 0
+    info = proto.parse_from_radio(
+        proto.refreshed_node_info(raw.SerializeToString(), pkt, now=1700000000)
+    ).node_info
+    assert info.hops_away == 1
+
+
+def test_telemetry_request_is_not_a_reading():
+    """A node asking for telemetry names the variant and leaves it empty."""
+    pkt = mesh_pb2.MeshPacket()
+    pkt.decoded.portnum = proto.PORT_TELEMETRY
+    pkt.decoded.want_response = True
+    tel = telemetry_pb2.Telemetry()
+    tel.local_stats.SetInParent()
+    pkt.decoded.payload = tel.SerializeToString()
+    assert proto.decode_telemetry(pkt) is None

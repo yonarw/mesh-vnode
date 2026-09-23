@@ -245,7 +245,8 @@ function Toolbar({
       </div>
 
       <p className="text-[11px] text-mist-400">
-        {matched} of {total} nodes
+        {matched} of {total} nodes kept here · more than the radio itself lists, which holds a fixed
+        maximum and forgets the rest
         {filters.heard !== "any" && " · favourites are shown whenever they were last heard"}
       </p>
     </div>

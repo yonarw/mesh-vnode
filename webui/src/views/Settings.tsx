@@ -120,10 +120,25 @@ function NodeCard({ status }: { status: Status | null }) {
           </span>
         )}
       </p>
+      {/* Dropping the setting here does not stop at "unset": the link has to
+          point somewhere, and with no VNODE_UPSTREAM_HOST that is a built-in
+          default which resolves on no network at all. Name the address the
+          button would move to, so it cannot quietly break the connection. */}
       {prefs!.upstream_source === "web ui" && (
-        <button className={`${quiet} mt-2`} disabled={saver.busy} onClick={() => void saver.run({ upstream_host: null, upstream_port: null }, "Back to the environment setting")}>
-          Use VNODE_UPSTREAM_HOST again
-        </button>
+        <div className="mt-2">
+          <button
+            className={quiet}
+            disabled={saver.busy}
+            onClick={() => void saver.run({ upstream_host: null, upstream_port: null }, `Back to ${prefs!.upstream_fallback}`)}
+          >
+            Use {prefs!.upstream_fallback} instead
+          </button>
+          <p className="mt-1 text-[11px] text-mist-400">
+            {prefs!.upstream_fallback_set
+              ? "From VNODE_UPSTREAM_HOST."
+              : "Nothing sets VNODE_UPSTREAM_HOST here, so this is the built-in default - an mDNS name that does not resolve in Docker or Home Assistant."}
+          </p>
+        </div>
       )}
       <Feedback msg={saver.msg} ok={saver.ok} />
     </Card>

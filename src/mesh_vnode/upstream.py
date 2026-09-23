@@ -625,9 +625,17 @@ class Upstream:
             if from_num:
                 self.db.refresh_node_frame(from_num, packet, int(time.time()))
                 # Anything heard from a node proves it is alive, a text message
-                # as much as a beacon. The port-specific handlers below add
-                # their richer fields on top.
-                self.db.upsert_node(from_num, {"last_heard": rx, "snr": meta["rx_snr"]})
+                # as much as a beacon, and carries how many hops it took to get
+                # here. The port-specific handlers below add their richer
+                # fields on top.
+                self.db.upsert_node(
+                    from_num,
+                    {
+                        "last_heard": rx,
+                        "snr": meta["rx_snr"],
+                        **proto.heard_fields(packet),
+                    },
+                )
 
         if portnum == proto.PORT_ROUTING:
             routing = proto.decode_routing(packet)
@@ -676,6 +684,11 @@ class Upstream:
             tel = proto.decode_telemetry(packet)
             if tel:
                 kind, values = tel
+                if kind == "local":
+                    # The node's own counts describe its fixed-size database
+                    # only. Ours go in beside them, so the telemetry page can
+                    # show what the radio still remembers against what is here.
+                    values = {**values, **self.db.node_counts(rx - proto.ONLINE_WINDOW_S)}
                 if self._tracked(from_num):
                     self.db.store_telemetry(from_num, rx, kind, values)
                 if kind == "device":

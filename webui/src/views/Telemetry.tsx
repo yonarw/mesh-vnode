@@ -147,6 +147,14 @@ interface Widget {
 
 const powered = (v: number) => (v > 100 ? "powered" : `${Math.round(v)}%`);
 
+/** The node database is a fixed-size array compiled into the firmware: 10 on an
+ *  STM32WL, 80 on an nRF52, 200 or 250 on an ESP32-S3 depending on its flash,
+ *  100 on everything else (firmware, src/mesh/mesh-pb-constants.h). Nothing in
+ *  the protocol says the database is full, so sitting exactly on one of those
+ *  numbers is the only sign of it from out here. */
+const NODEDB_CAPS = [10, 80, 100, 200, 250];
+const nodedbFull = (total: number) => NODEDB_CAPS.includes(total);
+
 /** Every value the page can show. Each is a graph, a number or hidden, as
  *  chosen under "Customise"; the default is a graph. */
 const WIDGETS: Widget[] = [
@@ -189,13 +197,46 @@ const WIDGETS: Widget[] = [
     id: "online",
     title: "Nodes online",
     rows: (d) => d.local,
+    // Two counts of the same two hours: what the radio still had room to
+    // remember, and what actually reached this add-on. They track each other
+    // until the radio's database fills up, and separate afterwards - that gap
+    // is how much the radio is forgetting. Its *total* is left off the chart on
+    // purpose: it is a fixed maximum, so once full it draws a flat ceiling that
+    // squashes everything else. It is in the pill instead.
     series: [
-      { key: "online", name: "online", color: SERIES[0] },
-      { key: "total", name: "known", color: SERIES[1] },
+      { key: "online", name: "online (radio)", color: SERIES[0] },
+      { key: "heard", name: "heard (here)", color: SERIES[1] },
     ],
     domain: [0, "auto"],
     digits: 0,
-    note: () => "Online means heard in the last two hours, as the node counts it.",
+    right: (d) => {
+      const known = latest(d.local, "total");
+      const here = latest(d.local, "here");
+      if (known === null && here === null) return null;
+      return (
+        <span className="flex shrink-0 gap-1.5">
+          {known !== null && (
+            <Pill tone={nodedbFull(known) ? "warn" : "neutral"}>
+              {known} known{nodedbFull(known) ? " (full)" : ""}
+            </Pill>
+          )}
+          {here !== null && <Pill>{here} here</Pill>}
+        </span>
+      );
+    },
+    note: (d) => {
+      const known = latest(d.local, "total");
+      const base =
+        "Online is the radio's own count of nodes heard in the last two hours; heard is this " +
+        "add-on's count over the same two hours.";
+      if (known === null || !nodedbFull(known)) return base;
+      return (
+        base +
+        ` The radio's database tops out at ${known} on this board and is full, so it drops the node` +
+        " heard longest ago whenever it meets a new one. Anything it forgets is still kept here, which" +
+        " is why the two counts drift apart and why the Nodes tab lists more."
+      );
+    },
   },
   {
     id: "sats",
@@ -305,6 +346,8 @@ function NodeTelemetry({
       relay: s.relay_per_hour ?? null,
       online: s.num_online_nodes ?? null,
       total: s.num_total_nodes ?? null,
+      heard: s.num_heard_here ?? null,
+      here: s.num_nodes_here ?? null,
       chUtil: s.channel_utilization ?? null,
       airTx: s.air_util_tx ?? null,
     }));

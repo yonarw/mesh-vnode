@@ -221,3 +221,87 @@ def test_a_config_complete_is_not_captured_as_unknown(up):
     fr.config_complete_id = 42
     up._on_raw_frame(fr.SerializeToString(), iface)
     assert iface._captured == []
+
+
+def test_every_packet_updates_how_far_away_its_sender_is(up):
+    """The node row's hops must not wait for the next config handshake.
+
+    The handshake is the only other source, so a node first heard after it -
+    and any node whose distance changed since - would otherwise sit at no hops
+    at all, which the UI reads as a direct neighbour.
+    """
+    pkt = packet(STRANGER, proto.PORT_TEXT, b"hi")
+    pkt.hop_start = 7
+    pkt.hop_limit = 2
+    store(up, pkt)
+    assert up.db.node(STRANGER)["hops_away"] == 5
+
+    closer = packet(STRANGER, proto.PORT_TEXT, b"again")
+    closer.hop_start = 7
+    closer.hop_limit = 6
+    store(up, closer)
+    assert up.db.node(STRANGER)["hops_away"] == 1
+
+
+def test_a_packet_over_mqtt_does_not_look_like_a_neighbour(up):
+    """MQTT hands the packet over with its hop counters untouched, which reads
+    as zero hops however far away the node really is."""
+    pkt = packet(STRANGER, proto.PORT_TEXT, b"hi")
+    pkt.hop_start = 7
+    pkt.hop_limit = 2
+    store(up, pkt)
+
+    relayed = packet(STRANGER, proto.PORT_TEXT, b"via mqtt")
+    relayed.hop_start = 3
+    relayed.hop_limit = 3
+    relayed.via_mqtt = True
+    store(up, relayed)
+
+    row = up.db.node(STRANGER)
+    assert row["hops_away"] == 5
+    assert row["via_mqtt"] == 1
+
+
+def test_a_telemetry_request_is_not_stored_as_a_sample(up):
+    """An empty local_stats is the question, not an answer: stored as a sample
+    it charts as a node that knows nobody and has never sent a packet."""
+    tel = telemetry_pb2.Telemetry()
+    tel.local_stats.SetInParent()
+    pkt = packet(ME, proto.PORT_TELEMETRY, tel.SerializeToString())
+    pkt.decoded.want_response = True
+    store(up, pkt)
+    assert up.db.counts()["telemetry"] == 0
+
+
+def local_stats(online: int = 12, total: int = 100) -> bytes:
+    tel = telemetry_pb2.Telemetry()
+    tel.local_stats.num_online_nodes = online
+    tel.local_stats.num_total_nodes = total
+    tel.local_stats.uptime_seconds = 3600
+    return tel.SerializeToString()
+
+
+def test_local_stats_carry_our_own_node_counts(up):
+    """The radio's counts only ever describe its own fixed-size database, so
+    ours go in beside them and the two can be charted against each other."""
+    now = int(time.time())
+    up.db.upsert_node(STRANGER, {"last_heard": now})
+    up.db.upsert_node(FAV, {"last_heard": now - proto.ONLINE_WINDOW_S - 60})
+
+    pkt = packet(ME, proto.PORT_TELEMETRY, local_stats())
+    pkt.rx_time = now
+    store(up, pkt)
+
+    sample = up.db.telemetry_rows(ME, now - 60)[-1]
+    assert sample["num_total_nodes"] == 100
+    # ME, FAV and STRANGER are all in the node table; only two were heard
+    # inside the window (ME's own row is touched by the packet above).
+    assert sample["num_nodes_here"] == 3
+    assert sample["num_heard_here"] == 2
+
+
+def test_node_counts_ignores_nodes_never_heard(up):
+    up.db.upsert_node(0x90000001, {"short_name": "NEW"})
+    counts = up.db.node_counts(int(time.time()) - proto.ONLINE_WINDOW_S)
+    assert counts["num_nodes_here"] == 4
+    assert counts["num_heard_here"] == 0

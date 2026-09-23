@@ -582,6 +582,21 @@ class Database:
             "SELECT * FROM nodes ORDER BY is_favorite DESC, COALESCE(last_heard, 0) DESC"
         )
 
+    def node_counts(self, since: int) -> dict[str, int]:
+        """How many nodes are stored here, and how many were heard since `since`.
+
+        The counterpart to the radio's own num_total_nodes/num_online_nodes,
+        which only ever describe its fixed-size node database: once that is full
+        it evicts the node heard longest ago, so its total stops at the limit
+        while this one keeps growing. Recorded next to each local stats sample
+        so the two can be read against each other over time.
+        """
+        row = self._query(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(last_heard >= ?), 0) AS heard FROM nodes",
+            (since,),
+        )[0]
+        return {"num_nodes_here": row["total"], "num_heard_here": row["heard"]}
+
     def favorite_nums(self) -> set[int]:
         return {r["node_num"] for r in self._query("SELECT node_num FROM nodes WHERE is_favorite")}
 

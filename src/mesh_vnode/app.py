@@ -22,6 +22,10 @@ class VNodeApp:
         # command line, then the web UI's setting, then VNODE_UPSTREAM_HOST.
         self.cli_upstream = cli_upstream
         self._env_upstream = (settings.upstream_host, settings.upstream_port)
+        # Whether anything actually supplied that address, or it is only the
+        # built-in default. Read before the line below overwrites the field,
+        # which would otherwise mark it as set.
+        self._env_upstream_set = "upstream_host" in settings.model_fields_set
         if not cli_upstream:
             settings.upstream_host, settings.upstream_port = self.upstream_target()
         self._env_allow_admin = settings.allow_admin

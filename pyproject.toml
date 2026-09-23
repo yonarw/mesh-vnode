@@ -1,6 +1,6 @@
 [project]
 name = "mesh-vnode"
-version = "0.2.0"
+version = "0.2.1"
 description = "A virtual node with a persistent message store, for use with Meshtastic(R) meshes"
 readme = "README.md"
 requires-python = ">=3.11"

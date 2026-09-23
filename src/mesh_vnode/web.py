@@ -483,10 +483,16 @@ def create_app(settings: Settings, *, cli_upstream: bool = False) -> FastAPI:
             if "upstream_host" in stored
             else "environment"
         )
+        env_host, env_port = vnode._env_upstream
         return {
             "upstream_host": settings.upstream_host,
             "upstream_port": settings.upstream_port,
             "upstream_source": host_source,
+            # Where "use the environment setting again" would point, and
+            # whether anything set it: with no VNODE_UPSTREAM_HOST that button
+            # falls back to a built-in default that resolves nowhere.
+            "upstream_fallback": f"{env_host}:{env_port}",
+            "upstream_fallback_set": vnode._env_upstream_set,
             "carto_api_key": stored.get("carto_api_key", ""),
             "map_provider": map_provider,
             "map_style": map_style,
