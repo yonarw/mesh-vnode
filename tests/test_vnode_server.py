@@ -113,6 +113,7 @@ class Client:
     def __init__(self, reader, writer) -> None:
         self.reader, self.writer = reader, writer
         self.decoder = FrameDecoder()
+        self.backlog: list[mesh_pb2.FromRadio] = []
 
     async def send(self, to_radio: mesh_pb2.ToRadio) -> None:
         self.writer.write(encode_frame(to_radio.SerializeToString()))
@@ -123,21 +124,51 @@ class Client:
         tr.want_config_id = nonce
         await self.send(tr)
 
-    async def collect(self, seconds: float = 1.2) -> list[mesh_pb2.FromRadio]:
-        out: list[mesh_pb2.FromRadio] = []
+    async def _frames(self, timeout: float) -> list[mesh_pb2.FromRadio] | None:
+        """What the next read brings, [] if it timed out, None at EOF."""
+        try:
+            data = await asyncio.wait_for(self.reader.read(4096), timeout)
+        except TimeoutError:
+            return []
+        if not data:
+            return None
+        return [mesh_pb2.FromRadio.FromString(p) for p in self.decoder.feed(data)]
+
+    async def collect(self, seconds: float = 1.2, idle: float = 0.2) -> list[mesh_pb2.FromRadio]:
+        """Frames until `idle` seconds pass without one, or `seconds` in all."""
+        out, self.backlog = self.backlog, []
         deadline = time.monotonic() + seconds
+        quiet_since = time.monotonic()
         while time.monotonic() < deadline:
-            try:
-                data = await asyncio.wait_for(self.reader.read(4096), timeout=0.15)
-            except TimeoutError:
-                continue
-            if not data:
+            frames = await self._frames(0.05)
+            if frames is None:
                 break
-            for payload in self.decoder.feed(data):
-                fr = mesh_pb2.FromRadio()
-                fr.ParseFromString(payload)
-                out.append(fr)
+            if frames:
+                out += frames
+                quiet_since = time.monotonic()
+            elif out and time.monotonic() - quiet_since > idle:
+                break
         return out
+
+    async def settle(self) -> None:
+        """Wait until everything sent so far has been handled. The server takes
+        a client's frames in order, so a heartbeat's answer marks the point."""
+        tr = mesh_pb2.ToRadio()
+        tr.heartbeat.SetInParent()
+        await self.send(tr)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            frames = await self._frames(0.05)
+            if frames is None:
+                return
+            for fr in frames:
+                if (
+                    fr.WhichOneof("payload_variant") == "queueStatus"
+                    and not fr.queueStatus.mesh_packet_id
+                ):
+                    return
+                self.backlog.append(fr)
+        raise TimeoutError("no answer to the heartbeat")
 
     async def close(self) -> None:
         self.writer.close()
@@ -278,8 +309,8 @@ async def test_a_reconnect_only_replays_what_is_new(running):
     first = await connect()
     await first.want_config(1)
     assert len(texts(await first.collect())) == 2
+    await first.settle()
     await first.close()
-    await asyncio.sleep(0.1)
 
     seed_texts(db, 1, start_id=900)
     second = await connect()
@@ -295,8 +326,8 @@ async def test_nothing_new_means_nothing_replayed(running):
     first = await connect()
     await first.want_config(1)
     await first.collect()
+    await first.settle()
     await first.close()
-    await asyncio.sleep(0.1)
 
     second = await connect()
     await second.want_config(2)
@@ -361,7 +392,7 @@ async def test_disconnect_is_handled_locally(running):
     tr = mesh_pb2.ToRadio()
     tr.disconnect = True
     await client.send(tr)
-    await asyncio.sleep(0.2)
+    await client.settle()
     # Never forwarded: the shared upstream session must survive an app closing.
     assert upstream.sent == []
     await client.close()
@@ -379,7 +410,7 @@ async def test_outgoing_text_is_forwarded_and_stored(running):
     tr.packet.decoded.portnum = proto.PORT_TEXT
     tr.packet.decoded.payload = b"from the phone"
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert len(upstream.sent) == 1
     assert db.messages(limit=5)[0]["text"] == "from the phone"
@@ -401,7 +432,7 @@ async def test_a_traceroute_from_the_app_is_recorded_as_a_request(running):
     tr.packet.decoded.portnum = proto.PORT_TRACEROUTE
     tr.packet.decoded.want_response = True
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     row = db.exchanges(0x11AA22BB)[0]
     assert (row["kind"], row["direction"], row["status"]) == ("traceroute", "out", "sent")
@@ -423,7 +454,7 @@ async def test_a_plain_message_from_the_app_is_not_a_request(running):
     tr.packet.decoded.portnum = proto.PORT_TEXT
     tr.packet.decoded.payload = b"just talking"
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert db.exchanges() == []
     await client.close()
@@ -441,9 +472,8 @@ async def test_a_clients_own_message_is_not_replayed_back_to_it(running):
     tr.packet.decoded.portnum = proto.PORT_TEXT
     tr.packet.decoded.payload = b"mine"
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
     await client.close()
-    await asyncio.sleep(0.1)
 
     again = await connect()
     await again.want_config(2)
@@ -463,7 +493,7 @@ async def test_admin_packets_are_blocked_by_default(running):
     tr.packet.decoded.portnum = proto.PORT_ADMIN
     tr.packet.decoded.payload = b"\x01"
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert upstream.sent == []
     await client.close()
@@ -482,7 +512,7 @@ async def test_admin_packets_pass_when_allowed(running):
     tr.packet.decoded.portnum = proto.PORT_ADMIN
     tr.packet.decoded.payload = b"\x01"
     await client.send(tr)
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert len(upstream.sent) == 1
     await client.close()
@@ -572,7 +602,7 @@ async def test_starring_a_node_in_the_app_passes_the_admin_block(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(set_favorite_node=0x11AA22BB))
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert len(recorder.sent) == 1
     assert recorder.flags == [(0x11AA22BB, {"is_favorite": True})]
@@ -585,7 +615,7 @@ async def test_other_admin_messages_stay_blocked(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(reboot_seconds=5))
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert upstream.sent == []
     await client.close()
@@ -601,7 +631,7 @@ async def test_a_star_is_not_recorded_when_the_node_is_down(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(set_favorite_node=0x11AA22BB))
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     # The node never heard about it, so this service must not pretend it did.
     assert recorder.flags == []
@@ -619,7 +649,7 @@ async def test_a_read_only_admin_request_passes(running):
     await client.send(
         admin_packet(get_config_request=admin_pb2.AdminMessage.ConfigType.SESSIONKEY_CONFIG)
     )
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert len(upstream.sent) == 1
     # Byte-for-byte: no sender fix-up on admin traffic.
@@ -638,7 +668,7 @@ async def test_an_admin_write_is_still_blocked(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(set_owner=mesh_pb2.User(long_name="pwned")))
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert upstream.sent == []
     await client.close()
@@ -666,7 +696,7 @@ async def test_an_allowed_admin_write_refreshes_the_stored_config(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(set_owner=mesh_pb2.User(long_name="new name")))
-    await asyncio.sleep(0.3)
+    await client.settle()
     assert len(upstream.sent) == 1
     assert upstream.refreshes == 1
     await client.close()
@@ -678,7 +708,7 @@ async def test_a_read_does_not_refresh_the_config(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(get_owner_request=True))
-    await asyncio.sleep(0.3)
+    await client.settle()
     assert upstream.refreshes == 0
     await client.close()
 
@@ -690,7 +720,7 @@ async def test_reads_can_be_blocked_too(running):
     await client.want_config(1)
     await client.collect(0.4)
     await client.send(admin_packet(get_owner_request=True))
-    await asyncio.sleep(0.3)
+    await client.settle()
 
     assert upstream.sent == []
     await client.close()

@@ -11,8 +11,23 @@ import {
   type MessageDetails,
   type NodeName,
 } from "../api";
-import { convKey, usePrefs } from "../prefs";
-import { Empty, Pill, clockTime, dayLabel } from "../ui";
+import { useTick } from "../live";
+import { convKey, parseConvKey, usePrefs, type Target } from "../prefs";
+import {
+  Chip,
+  CloseButton,
+  Empty,
+  Pill,
+  Sheet,
+  clockTime,
+  dayLabel,
+  displayName,
+  distanceLabel,
+  fullName,
+  hopsLabel,
+  nodeIdHex,
+  useStoredState,
+} from "../ui";
 import NodeSheet, { exchangeLine } from "./NodeSheet";
 
 // The tapbacks the Meshtastic phone apps offer, in their order. Staying with
@@ -20,45 +35,26 @@ import NodeSheet, { exchangeLine } from "./NodeSheet";
 // as a stray one-character message.
 const TAPBACKS = ["\u{1F44D}", "\u{1F44E}", "\u{1F602}", "\u2757", "\u2753", "\u{1F622}", "\u{1F4A9}"];
 
-export type Target = { kind: "channel"; index: number; name: string } | { kind: "dm"; node: number; name: string };
-
-// The last conversation, per browser: reopening the page should not drop you
-// back on the primary channel every time.
-const LAST_KEY = "vnode.lastConversation";
-
-function loadLast(): Target | null {
-  try {
-    const m = localStorage.getItem(LAST_KEY)?.match(/^(ch|dm):(\d+)$/);
-    if (!m) return null;
-    return m[1] === "ch" ? { kind: "channel", index: Number(m[2]), name: "" } : { kind: "dm", node: Number(m[2]), name: "" };
-  } catch {
-    return null;
-  }
-}
-
-function saveLast(t: Target) {
-  try {
-    localStorage.setItem(LAST_KEY, convKey(t));
-  } catch {
-    /* private window: fine */
-  }
-}
+const isConvKey = (v: unknown): v is string => typeof v === "string" && parseConvKey(v) !== null;
 
 export default function Messages({
   myNodeNum,
-  tick,
   requested,
   onViewing,
 }: {
   myNodeNum: number | null;
-  tick: number;
   /** A conversation another view asked to open, e.g. "Message" on a node. */
   requested: Target | null;
   /** Tells the app which conversation is on screen, so it does not notify for it. */
   onViewing: (key: string | null) => void;
 }) {
+  const tick = useTick("messages");
+  const exchangeTick = useTick("exchanges");
   const convos = useResource<Conversations>(() => api.conversations(), [tick]);
-  const [target, setTarget] = useState<Target | null>(() => requested ?? loadLast());
+  // The last conversation is remembered per browser, so a reload does not
+  // drop you back on the primary channel.
+  const [lastKey, setLastKey] = useStoredState<string>("vnode.lastConversation", "", isConvKey);
+  const [target, setTarget] = useState<Target | null>(() => requested ?? parseConvKey(lastKey));
   const [details, setDetails] = useState<number | null>(null);
   // A node opened from a name or a reaction in the thread, shown as a card.
   const [nodeCard, setNodeCard] = useState<{ num: number; name: NodeName } | null>(null);
@@ -77,10 +73,10 @@ export default function Messages({
   }, [convos.data, target]);
 
   useEffect(() => {
-    if (target) saveLast(target);
+    if (target) setLastKey(convKey(target));
     onViewing(target ? convKey(target) : null);
     return () => onViewing(null);
-  }, [target, onViewing]);
+  }, [target, onViewing, setLastKey]);
 
   // A target opened from a link or a notification arrives without its name.
   const named = useMemo(() => (target ? withName(target, convos.data) : null), [target, convos.data]);
@@ -98,7 +94,7 @@ export default function Messages({
   // a request is always addressed to one node.
   const exchanges = useResource<Exchange[]>(
     () => (target?.kind === "dm" ? api.exchanges(target.node, 50) : Promise.resolve([])),
-    [target?.kind, target?.kind === "dm" ? target.node : null, tick],
+    [target?.kind, target?.kind === "dm" ? target.node : null, exchangeTick],
   );
 
   // A reaction is a normal send: the emoji is the payload and reply_id names
@@ -132,15 +128,8 @@ export default function Messages({
         onOpenNode={openNode}
       />
       {named && <Composer target={named} onSent={() => void messages.refresh()} />}
-      {details !== null && <DetailsSheet seq={details} tick={tick} myNodeNum={myNodeNum} onClose={() => setDetails(null)} />}
-      {nodeCard && (
-        <NodeSheet
-          nodeNum={nodeCard.num}
-          fallback={nodeCard.name}
-          tick={tick}
-          onClose={() => setNodeCard(null)}
-        />
-      )}
+      {details !== null && <DetailsSheet seq={details} myNodeNum={myNodeNum} onClose={() => setDetails(null)} />}
+      {nodeCard && <NodeSheet nodeNum={nodeCard.num} fallback={nodeCard.name} onClose={() => setNodeCard(null)} />}
     </div>
   );
 }
@@ -152,7 +141,7 @@ function withName(t: Target, convos: Conversations | null): Target {
     return { ...t, name: ch?.name ?? `channel ${t.index}` };
   }
   const d = convos.direct.find((c) => c.node_num === t.node);
-  return { ...t, name: d ? d.short_name || d.long_name || d.node_id : `!${t.node.toString(16).padStart(8, "0")}` };
+  return { ...t, name: d ? d.short_name || d.long_name || d.node_id : nodeIdHex(t.node) };
 }
 
 function ConversationBar({
@@ -171,19 +160,10 @@ function ConversationBar({
 
   // A DM opened from the node list may have no messages yet, so it is not in
   // the list the server returns. Show it anyway, or the composer has no context.
-  const openDmMissing =
-    target?.kind === "dm" && !convos.direct.some((d) => d.node_num === target.node) ? target : null;
+  const openDmMissing = target?.kind === "dm" && !convos.direct.some((d) => d.node_num === target.node) ? target : null;
 
   const chip = (t: Target, meta?: string) => (
-    <button
-      key={convKey(t)}
-      onClick={() => onSelect(t)}
-      className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
-        isActive(t)
-          ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-          : "border-ink-700 bg-ink-800/70 text-mist-400 hover:text-mist-200"
-      }`}
-    >
+    <Chip key={convKey(t)} on={isActive(t)} onClick={() => onSelect(t)}>
       {t.kind === "channel" && <span className="mr-1 tabular-nums opacity-60">{t.index}</span>}
       {t.kind === "channel" ? "#" : "@"}
       {t.name}
@@ -193,7 +173,7 @@ function ConversationBar({
           🔕
         </span>
       )}
-    </button>
+    </Chip>
   );
 
   return (
@@ -228,39 +208,35 @@ function ThreadHeader({ target, channels }: { target: Target; channels: Channel[
 
   return (
     <div className="-mt-1 px-1">
-    <div className="flex items-center justify-between gap-2">
-      <span className="truncate text-xs text-mist-400">
-        {target.kind === "channel"
-          ? `Channel ${target.index}${channel ? ` · ${channel.role === "PRIMARY" ? "primary" : "secondary"}` : ""}`
-          : "Direct message"}
-        {error && <span className="ml-2 text-alert-400">{error}</span>}
-      </span>
-      <div className="flex shrink-0 gap-1.5">
-      {channel && (
-        <button
-          onClick={() => setInfo((i) => !i)}
-          aria-expanded={info}
-          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-            info ? "border-accent-400/60 bg-accent-400/15 text-accent-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
-          }`}
-        >
-          ⓘ Info
-        </button>
-      )}
-      <button
-        onClick={toggle}
-        disabled={!prefs}
-        aria-pressed={muted}
-        title={muted ? "Muted: no notifications from this conversation" : "Mute notifications from this conversation"}
-        className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-          muted ? "border-warn-400/40 bg-warn-400/10 text-warn-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
-        }`}
-      >
-        {muted ? "🔕 Muted" : "🔔 Mute"}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-xs text-mist-400">
+          {target.kind === "channel"
+            ? `Channel ${target.index}${channel ? ` · ${channel.role === "PRIMARY" ? "primary" : "secondary"}` : ""}`
+            : "Direct message"}
+          {error && <span className="ml-2 text-alert-400">{error}</span>}
+        </span>
+        <div className="flex shrink-0 gap-1.5">
+          {channel && (
+            <Chip small on={info} onClick={() => setInfo((i) => !i)}>
+              ⓘ Info
+            </Chip>
+          )}
+          <button
+            onClick={toggle}
+            disabled={!prefs}
+            aria-pressed={muted}
+            title={
+              muted ? "Muted: no notifications from this conversation" : "Mute notifications from this conversation"
+            }
+            className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+              muted ? "border-warn-400/40 bg-warn-400/10 text-warn-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
+            }`}
+          >
+            {muted ? "🔕 Muted" : "🔔 Mute"}
+          </button>
+        </div>
       </div>
-    </div>
-    {info && channel && <ChannelInfo channel={channel} />}
+      {info && channel && <ChannelInfo channel={channel} />}
     </div>
   );
 }
@@ -281,7 +257,7 @@ function ChannelInfo({ channel: c }: { channel: Channel }) {
       ? "Not shared on this channel"
       : c.position_precision >= 32
         ? "Exact position"
-        : `Blurred to ±${m !== null && m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m ?? 0)} m`} (${c.position_precision} bits)`;
+        : `Blurred to ±${distanceLabel(m ?? 0)} (${c.position_precision} bits)`;
   return (
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-lg border border-ink-700 bg-ink-900/80 px-3 py-2 text-xs">
       <dt className="text-mist-400">Encryption</dt>
@@ -289,9 +265,13 @@ function ChannelInfo({ channel: c }: { channel: Channel }) {
       <dt className="text-mist-400">Your position</dt>
       <dd className="text-mist-200">
         {position}
-        {c.carries_position && <span className="block text-[11px] text-mist-400">Your node broadcasts its position on this channel.</span>}
+        {c.carries_position && (
+          <span className="block text-[11px] text-mist-400">Your node broadcasts its position on this channel.</span>
+        )}
         {c.public && c.position_precision === 15 && (
-          <span className="block text-[11px] text-mist-400">The firmware caps position on a public channel at this.</span>
+          <span className="block text-[11px] text-mist-400">
+            The firmware caps position on a public channel at this.
+          </span>
         )}
       </dd>
       <dt className="text-mist-400">MQTT</dt>
@@ -364,11 +344,7 @@ function Thread({
           <div className="my-3 text-center text-[11px] uppercase tracking-wider text-mist-400">{group.day}</div>
           {group.items.map((item) =>
             item.exchange ? (
-              <ExchangeLine
-                key={`x${item.exchange.id}`}
-                exchange={item.exchange}
-                onOpenNode={onOpenNode}
-              />
+              <ExchangeLine key={`x${item.exchange.id}`} exchange={item.exchange} onOpenNode={onOpenNode} />
             ) : (
               <Bubble
                 key={item.message!.seq}
@@ -390,9 +366,6 @@ function Thread({
 /** A conversation holds messages and the requests made of the same node, in
  *  the order they happened. */
 type ThreadItem = { at: number; message?: Message; exchange?: Exchange };
-
-const displayName = (n: NodeName) => n.short || n.long || n.id;
-const fullName = (n: NodeName) => (n.long && n.short ? `${n.long} (${n.short})` : n.long || n.short || n.id);
 
 function Bubble({
   message,
@@ -454,7 +427,7 @@ function Bubble({
           >
             <span>{clockTime(message.rx_time)}</span>
             {message.rx_snr !== null && <span>{message.rx_snr.toFixed(1)} dB</span>}
-            {hops > 0 && <span>{hops} hop{hops > 1 ? "s" : ""}</span>}
+            {hops > 0 && <span>{hopsLabel(hops)}</span>}
             {mine && <DeliveryMark message={message} />}
           </button>
         </div>
@@ -530,11 +503,7 @@ function ExchangeLine({
 /** A name in the thread: tapping it opens that node's card. */
 function NodeLink({ name, onClick }: { name: NodeName; onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      title={`${fullName(name)} - show node`}
-      className="text-accent-400 hover:underline"
-    >
+    <button onClick={onClick} title={`${fullName(name)} - show node`} className="text-accent-400 hover:underline">
       {displayName(name)}
     </button>
   );
@@ -546,7 +515,16 @@ function NodeLink({ name, onClick }: { name: NodeName; onClick: () => void }) {
  *  clock = waiting for the node, arrow = in the node's queue, waves = heard
  *  repeated on the mesh, check = the recipient confirmed (direct messages only). */
 function DeliveryIcon({ status }: { status: DeliveryStatus }) {
-  const common = { width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+  const common = {
+    width: 14,
+    height: 14,
+    viewBox: "0 0 16 16",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  } as const;
   switch (status) {
     case "pending":
       return (
@@ -630,79 +608,64 @@ const ERRORS: Record<string, string> = {
 };
 
 const fullTime = (unix: number) =>
-  new Date(unix * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  new Date(unix * 1000).toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 const hex = (n: number) => `0x${n.toString(16).padStart(8, "0")}`;
 
-function DetailsSheet({
-  seq,
-  tick,
-  myNodeNum,
-  onClose,
-}: {
-  seq: number;
-  tick: number;
-  myNodeNum: number | null;
-  onClose: () => void;
-}) {
+function DetailsSheet({ seq, myNodeNum, onClose }: { seq: number; myNodeNum: number | null; onClose: () => void }) {
+  const tick = useTick("messages");
   const d = useResource<MessageDetails>(() => api.messageDetails(seq), [seq, tick]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const m = d.data;
   const mine = m !== null && myNodeNum !== null && m.from_num === myNodeNum;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-label="Message details"
-        onClick={(e) => e.stopPropagation()}
-        className="safe-bottom max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-ink-700 bg-ink-900 p-4 sm:rounded-2xl"
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-mist-200">Message details</h2>
-          <button onClick={onClose} className="rounded-full px-2 py-1 text-mist-400 hover:text-mist-200" aria-label="Close">
-            ✕
-          </button>
-        </div>
-        {!m ? (
-          <Empty>{d.error ?? "Loading…"}</Empty>
-        ) : (
-          <>
-            <p className="mb-3 whitespace-pre-wrap break-words rounded-lg bg-ink-800 px-3 py-2 text-sm text-mist-200">{m.text}</p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-              <Row label="From">{fullName(m.sender)}</Row>
-              <Row label="To">{m.recipient ? fullName(m.recipient) : `everyone on channel ${m.channel}`}</Row>
-              <Row label={mine ? "Sent" : "Received"}>{fullTime(m.rx_time)}</Row>
-              {!mine && m.hop_start > 0 && (
-                <Row label="Path">
-                  {m.hop_start - m.hop_limit === 0 ? "heard directly" : `${m.hop_start - m.hop_limit} of ${m.hop_start} hops`}
-                </Row>
-              )}
-              {!mine && (m.rx_snr !== null || m.rx_rssi !== null) && (
-                <Row label="Signal">
-                  {[m.rx_snr !== null && `SNR ${m.rx_snr.toFixed(1)} dB`, m.rx_rssi !== null && `RSSI ${m.rx_rssi} dBm`]
-                    .filter(Boolean)
-                    .join(" · ")}
-                  {m.hop_start - m.hop_limit > 0 && <span className="text-mist-400"> (from the last relay)</span>}
-                </Row>
-              )}
-              {m.is_dm && <Row label="Encryption">{m.pki ? "sealed to the recipient's key" : "channel key"}</Row>}
-              <Row label="Packet">
-                <span className="font-mono">{hex(m.packet_id)}</span>
-                {m.origin && <span className="text-mist-400"> · sent from {m.origin}</span>}
-              </Row>
-            </dl>
-
-            {mine && <DeliveryTimeline m={m} />}
-          </>
-        )}
+    <Sheet label="Message details" onClose={onClose}>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-mist-200">Message details</h2>
+        <CloseButton onClick={onClose} />
       </div>
-    </div>
+      {!m ? (
+        <Empty>{d.error ?? "Loading…"}</Empty>
+      ) : (
+        <>
+          <p className="mb-3 whitespace-pre-wrap break-words rounded-lg bg-ink-800 px-3 py-2 text-sm text-mist-200">
+            {m.text}
+          </p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+            <Row label="From">{fullName(m.sender)}</Row>
+            <Row label="To">{m.recipient ? fullName(m.recipient) : `everyone on channel ${m.channel}`}</Row>
+            <Row label={mine ? "Sent" : "Received"}>{fullTime(m.rx_time)}</Row>
+            {!mine && m.hop_start > 0 && (
+              <Row label="Path">
+                {m.hop_start - m.hop_limit === 0
+                  ? "heard directly"
+                  : `${m.hop_start - m.hop_limit} of ${m.hop_start} hops`}
+              </Row>
+            )}
+            {!mine && (m.rx_snr !== null || m.rx_rssi !== null) && (
+              <Row label="Signal">
+                {[m.rx_snr !== null && `SNR ${m.rx_snr.toFixed(1)} dB`, m.rx_rssi !== null && `RSSI ${m.rx_rssi} dBm`]
+                  .filter(Boolean)
+                  .join(" · ")}
+                {m.hop_start - m.hop_limit > 0 && <span className="text-mist-400"> (from the last relay)</span>}
+              </Row>
+            )}
+            {m.is_dm && <Row label="Encryption">{m.pki ? "sealed to the recipient's key" : "channel key"}</Row>}
+            <Row label="Packet">
+              <span className="font-mono">{hex(m.packet_id)}</span>
+              {m.origin && <span className="text-mist-400"> · sent from {m.origin}</span>}
+            </Row>
+          </dl>
+
+          {mine && <DeliveryTimeline m={m} />}
+        </>
+      )}
+    </Sheet>
   );
 }
 
@@ -782,7 +745,9 @@ function describe(e: DeliveryEvent, m: MessageDetails): React.ReactNode {
     case "nak": {
       const reason = e.error ? (ERRORS[e.error] ?? e.error) : "unknown reason";
       const from =
-        e.ack_from !== null && e.ack_from !== m.from_num && e.ack_from_name ? ` (reported by ${displayName(e.ack_from_name)})` : "";
+        e.ack_from !== null && e.ack_from !== m.from_num && e.ack_from_name
+          ? ` (reported by ${displayName(e.ack_from_name)})`
+          : "";
       return `Failed: ${reason}${from}`;
     }
   }

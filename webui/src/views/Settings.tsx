@@ -1,14 +1,24 @@
 import { useEffect, useState } from "react";
-import { api, useResource, type AppForward, type Channel, type Conversations, type MapProvider, type MapStyle, type Status } from "../api";
+import {
+  api,
+  useResource,
+  type AppForward,
+  type Channel,
+  type Conversations,
+  type MapProvider,
+  type MapStyle,
+  type Status,
+} from "../api";
 import { notifyState, setNotify, type NotifyState } from "../notify";
 import { usePrefs } from "../prefs";
-import { Card, Empty, Pill } from "../ui";
+import { Card, Chip, Empty, Pill, Segmented, Sheet, nodeIdHex } from "../ui";
 
 const input =
   "w-full min-w-0 rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist-200 outline-none placeholder:text-mist-400 focus:border-accent-400/60 disabled:opacity-50";
 const button =
   "shrink-0 rounded-full border border-accent-400/40 bg-accent-400/10 px-4 py-1.5 text-xs font-semibold text-accent-400 disabled:opacity-40";
-const quiet = "shrink-0 rounded-full border border-ink-700 bg-ink-800/70 px-3 py-1.5 text-xs text-mist-400 hover:text-mist-200 disabled:opacity-40";
+const quiet =
+  "shrink-0 rounded-full border border-ink-700 bg-ink-800/70 px-3 py-1.5 text-xs text-mist-400 hover:text-mist-200 disabled:opacity-40";
 
 export default function Settings({ status, channels }: { status: Status | null; channels: Channel[] }) {
   const { prefs, error } = usePrefs();
@@ -32,7 +42,11 @@ export default function Settings({ status, channels }: { status: Status | null; 
 
 function useSaver() {
   const { save } = usePrefs();
-  const [state, setState] = useState<{ busy: boolean; msg: string | null; ok: boolean }>({ busy: false, msg: null, ok: true });
+  const [state, setState] = useState<{ busy: boolean; msg: string | null; ok: boolean }>({
+    busy: false,
+    msg: null,
+    ok: true,
+  });
   const run = async (patch: Parameters<typeof save>[0], done = "Saved") => {
     setState({ busy: true, msg: null, ok: true });
     try {
@@ -52,13 +66,15 @@ function Feedback({ msg, ok }: { msg: string | null; ok: boolean }) {
 
 function NodeCard({ status }: { status: Status | null }) {
   const { prefs } = usePrefs();
-  const [host, setHost] = useState(prefs!.upstream_host);
-  const [port, setPort] = useState(String(prefs!.upstream_port));
+  const savedHost = prefs!.upstream_host;
+  const savedPort = prefs!.upstream_port;
+  const [host, setHost] = useState(savedHost);
+  const [port, setPort] = useState(String(savedPort));
   const saver = useSaver();
   useEffect(() => {
-    setHost(prefs!.upstream_host);
-    setPort(String(prefs!.upstream_port));
-  }, [prefs!.upstream_host, prefs!.upstream_port]);
+    setHost(savedHost);
+    setPort(String(savedPort));
+  }, [savedHost, savedPort]);
 
   const locked = prefs!.upstream_source === "command line";
   const portNum = Number(port);
@@ -74,7 +90,8 @@ function NodeCard({ status }: { status: Status | null }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (valid && changed) void saver.run({ upstream_host: host.trim(), upstream_port: portNum }, "Saved - reconnecting");
+          if (valid && changed)
+            void saver.run({ upstream_host: host.trim(), upstream_port: portNum }, "Saved - reconnecting");
         }}
         className="space-y-2"
       >
@@ -129,7 +146,9 @@ function NodeCard({ status }: { status: Status | null }) {
           <button
             className={quiet}
             disabled={saver.busy}
-            onClick={() => void saver.run({ upstream_host: null, upstream_port: null }, `Back to ${prefs!.upstream_fallback}`)}
+            onClick={() =>
+              void saver.run({ upstream_host: null, upstream_port: null }, `Back to ${prefs!.upstream_fallback}`)
+            }
           >
             Use {prefs!.upstream_fallback} instead
           </button>
@@ -150,7 +169,10 @@ function AppAccessCard() {
   const saver = useSaver();
   const on = prefs!.allow_admin;
   return (
-    <Card title="Node settings from the app" right={<Pill tone={on ? "warn" : "neutral"}>{on ? "allowed" : "blocked"}</Pill>}>
+    <Card
+      title="Node settings from the app"
+      right={<Pill tone={on ? "warn" : "neutral"}>{on ? "allowed" : "blocked"}</Pill>}
+    >
       <p className="text-xs text-mist-400">
         {on
           ? "Apps connected to this service can change the node's settings (radio, channels, owner, modules) as if connected directly."
@@ -185,6 +207,7 @@ function AppForwardCard() {
   const current = prefs!.app_forward;
   const set = (key: keyof AppForward, value: string) =>
     void saver.run({ app_forward: { ...current, [key]: value } as AppForward });
+  const label = { all: "Everyone", favorites: "Favourites", none: "Off" };
 
   return (
     <Card title="What to send to Meshtastic apps">
@@ -194,36 +217,29 @@ function AppForwardCard() {
       </p>
       <ul className="divide-y divide-ink-700">
         {FORWARD_ROWS.map((row) => {
-          const options = row.favorites ? (["all", "favorites", "none"] as const) : (["all", "none"] as const);
+          const options = (row.favorites ? (["all", "favorites", "none"] as const) : (["all", "none"] as const)).map(
+            (value) => ({ value, label: label[value] }),
+          );
           return (
             <li key={row.key} className="flex items-center justify-between gap-2 py-2">
               <div className="min-w-0">
                 <div className="text-xs text-mist-200">{row.label}</div>
                 <div className="truncate text-[11px] text-mist-400">{row.hint}</div>
               </div>
-              <div className="flex shrink-0 overflow-hidden rounded-full border border-ink-700">
-                {options.map((o) => (
-                  <button
-                    key={o}
-                    onClick={() => set(row.key, o)}
-                    disabled={saver.busy}
-                    aria-pressed={current[row.key] === o}
-                    className={`px-2.5 py-1 text-[11px] font-medium ${
-                      current[row.key] === o ? "bg-accent-400/15 text-accent-400" : "text-mist-400"
-                    }`}
-                  >
-                    {o === "all" ? "Everyone" : o === "favorites" ? "Favourites" : "Off"}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                options={options}
+                value={current[row.key]}
+                onChange={(o) => set(row.key, o)}
+                disabled={saver.busy}
+              />
             </li>
           );
         })}
       </ul>
       <p className="mt-2 text-[11px] text-mist-400">
-        Always sent: text messages and reactions, anything to or from your own node (acks, answers to what the app
-        asked for), and the node's status. What is held back still reaches the app's node list the next time it
-        connects: the list it gets on connect is kept up to date here.
+        Always sent: text messages and reactions, anything to or from your own node (acks, answers to what the app asked
+        for), and the node's status. What is held back still reaches the app's node list the next time it connects: the
+        list it gets on connect is kept up to date here.
       </p>
       <Feedback msg={saver.msg} ok={saver.ok} />
     </Card>
@@ -260,10 +276,11 @@ const PROVIDERS: { id: MapProvider; label: string; note: string; styles: { id: M
 
 function MapCard() {
   const { prefs } = usePrefs();
-  const [key, setKey] = useState(prefs!.carto_api_key);
+  const savedKey = prefs!.carto_api_key;
+  const [key, setKey] = useState(savedKey);
   const [show, setShow] = useState(false);
   const saver = useSaver();
-  useEffect(() => setKey(prefs!.carto_api_key), [prefs!.carto_api_key]);
+  useEffect(() => setKey(savedKey), [savedKey]);
 
   const current = PROVIDERS.find((p) => p.id === prefs!.map_provider) ?? PROVIDERS[0];
 
@@ -272,19 +289,14 @@ function MapCard() {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-xs text-mist-400">Basemap</span>
         {PROVIDERS.map((p) => (
-          <button
+          <Chip
             key={p.id}
+            on={current.id === p.id}
             onClick={() => void saver.run({ map_provider: p.id, map_style: p.styles[0].id })}
-            aria-pressed={current.id === p.id}
             title={p.note}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
-              current.id === p.id
-                ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-                : "border-ink-700 bg-ink-800/70 text-mist-400"
-            }`}
           >
             {p.label}
-          </button>
+          </Chip>
         ))}
       </div>
       <p className="mt-2 text-[11px] text-mist-400">{current.note}</p>
@@ -292,18 +304,9 @@ function MapCard() {
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-xs text-mist-400">Style</span>
         {current.styles.map((st) => (
-          <button
-            key={st.id}
-            onClick={() => void saver.run({ map_style: st.id })}
-            aria-pressed={prefs!.map_style === st.id}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
-              prefs!.map_style === st.id
-                ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-                : "border-ink-700 bg-ink-800/70 text-mist-400"
-            }`}
-          >
+          <Chip key={st.id} on={prefs!.map_style === st.id} onClick={() => void saver.run({ map_style: st.id })}>
             {st.label}
-          </button>
+          </Chip>
         ))}
       </div>
 
@@ -338,7 +341,12 @@ function MapCard() {
           </form>
           <p className="mt-2 text-[11px] text-mist-400">
             Get one at{" "}
-            <a className="text-accent-400 underline" href="https://carto.com/basemaps/apikey" target="_blank" rel="noreferrer">
+            <a
+              className="text-accent-400 underline"
+              href="https://carto.com/basemaps/apikey"
+              target="_blank"
+              rel="noreferrer"
+            >
               carto.com/basemaps/apikey
             </a>
             . The browser sends it with every map tile, so if the key is restricted to certain domains, add the address
@@ -375,7 +383,10 @@ function NotificationsCard() {
   };
 
   return (
-    <Card title="Notifications" right={<Pill tone={state === "on" ? "good" : "neutral"}>{state === "on" ? "on" : "off"}</Pill>}>
+    <Card
+      title="Notifications"
+      right={<Pill tone={state === "on" ? "good" : "neutral"}>{state === "on" ? "on" : "off"}</Pill>}
+    >
       <p className="text-xs text-mist-400">{text[state]}</p>
       {(state === "on" || state === "off") && (
         <button className={`${button} mt-3`} onClick={toggle} disabled={busy}>
@@ -430,12 +441,6 @@ function ClearDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
-
   const n = (key: string) => (preview.data ? (preview.data[key] ?? 0).toLocaleString() : "…");
   const clear = async () => {
     setBusy(true);
@@ -457,7 +462,7 @@ function ClearDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
     [n("nodes"), "nodes in the node list, with names, positions and last-heard times"],
     [n("telemetry"), "telemetry samples (battery, noise floor, channel use, GPS) - the Telemetry graphs"],
     [n("positions"), "points of position tracks shown on the map"],
-    [n("traffic"), "hourly traffic counts - the \"Mesh traffic heard per hour\" chart"],
+    [n("traffic"), 'hourly traffic counts - the "Mesh traffic heard per hour" chart'],
     [n("delivery_log"), "delivery reports for messages you sent (who acked, who repeated)"],
     [n("exchanges"), "traceroutes and position, telemetry and node info requests"],
     [n("events"), "entries in the event log on the Status page"],
@@ -465,81 +470,75 @@ function ClearDialog({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center" onClick={() => !busy && onClose()}>
-      <div
-        role="alertdialog"
-        aria-labelledby="clear-title"
-        onClick={(e) => e.stopPropagation()}
-        className="safe-bottom max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border-2 border-alert-400/70 bg-ink-900 p-4 sm:rounded-2xl"
-      >
-        <h2 id="clear-title" className="text-base font-bold text-alert-400">
-          ⚠ Clear all data from the vnode?
-        </h2>
-        <p className="mt-1 text-xs text-mist-200">This cannot be undone. There is no backup.</p>
+    <Sheet label="Clear all data" onClose={onClose} locked={busy} alert>
+      <h2 className="text-base font-bold text-alert-400">⚠ Clear all data from the vnode?</h2>
+      <p className="mt-1 text-xs text-mist-200">This cannot be undone. There is no backup.</p>
 
-        <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-alert-400">Deleted</h3>
-        <ul className="mt-1 space-y-1 text-xs">
-          {deleted.map(([count, what]) => (
-            <li key={what} className="flex gap-2">
-              <span className="w-14 shrink-0 text-right font-mono tabular-nums text-alert-400">{count}</span>
-              <span className="text-mist-200">{what}</span>
-            </li>
-          ))}
-        </ul>
-
-        <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-mist-400">Kept</h3>
-        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-mist-200">
-          <li>All settings on this page: node address, app access, what apps get, basemap and its key, muted chats, telemetry layout</li>
-          <li>Messages already in the Meshtastic apps and on the physical node - this only clears the vnode</li>
-        </ul>
-
-        <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-mist-400">Then</h3>
-        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-mist-200">
-          <li>
-            {n("connected apps")} connected app(s) are disconnected. They reconnect by themselves and start from the
-            empty store, so messages they have not been given yet are lost to them.
+      <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-alert-400">Deleted</h3>
+      <ul className="mt-1 space-y-1 text-xs">
+        {deleted.map(([count, what]) => (
+          <li key={what} className="flex gap-2">
+            <span className="w-14 shrink-0 text-right font-mono tabular-nums text-alert-400">{count}</span>
+            <span className="text-mist-200">{what}</span>
           </li>
-          <li>The vnode reconnects to the node and fetches its config and node list fresh.</li>
-          <li>Message numbering starts again at 1, and new messages fill the store from now on.</li>
-        </ul>
+        ))}
+      </ul>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (typed === "CLEAR") void clear();
-          }}
-          className="mt-4 space-y-2 border-t border-ink-700 pt-3"
-        >
-          <label className="block text-xs text-mist-200" htmlFor="clear-confirm">
-            Type <span className="font-mono font-semibold text-alert-400">CLEAR</span> to confirm
-          </label>
-          <input
-            id="clear-confirm"
-            className={`${input} border-alert-400/60 font-mono`}
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            autoFocus
-            disabled={busy}
-          />
-          {error && <p className="text-xs text-alert-400">{error}</p>}
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={typed !== "CLEAR" || busy}
-              className="rounded-full bg-alert-400 px-4 py-1.5 text-xs font-bold text-ink-950 disabled:opacity-30"
-            >
-              {busy ? "Clearing…" : "Delete everything"}
-            </button>
-            <button type="button" className={quiet} onClick={onClose} disabled={busy}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+      <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-mist-400">Kept</h3>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-mist-200">
+        <li>
+          All settings on this page: node address, app access, what apps get, basemap and its key, muted chats,
+          telemetry layout
+        </li>
+        <li>Messages already in the Meshtastic apps and on the physical node - this only clears the vnode</li>
+      </ul>
+
+      <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider text-mist-400">Then</h3>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-mist-200">
+        <li>
+          {n("connected apps")} connected app(s) are disconnected. They reconnect by themselves and start from the empty
+          store, so messages they have not been given yet are lost to them.
+        </li>
+        <li>The vnode reconnects to the node and fetches its config and node list fresh.</li>
+        <li>Message numbering starts again at 1, and new messages fill the store from now on.</li>
+      </ul>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (typed === "CLEAR") void clear();
+        }}
+        className="mt-4 space-y-2 border-t border-ink-700 pt-3"
+      >
+        <label className="block text-xs text-mist-200" htmlFor="clear-confirm">
+          Type <span className="font-mono font-semibold text-alert-400">CLEAR</span> to confirm
+        </label>
+        <input
+          id="clear-confirm"
+          className={`${input} border-alert-400/60 font-mono`}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          autoComplete="off"
+          autoCapitalize="characters"
+          spellCheck={false}
+          autoFocus
+          disabled={busy}
+        />
+        {error && <p className="text-xs text-alert-400">{error}</p>}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={typed !== "CLEAR" || busy}
+            className="rounded-full bg-alert-400 px-4 py-1.5 text-xs font-bold text-ink-950 disabled:opacity-30"
+          >
+            {busy ? "Clearing…" : "Delete everything"}
+          </button>
+          <button type="button" className={quiet} onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Sheet>
   );
 }
 
@@ -553,7 +552,7 @@ function MutedCard({ channels }: { channels: Channel[] }) {
     const [kind, id] = key.split(":");
     if (kind === "ch") return `#${channels.find((c) => c.index === Number(id))?.name ?? `channel ${id}`}`;
     const d = convos.data?.direct.find((c) => c.node_num === Number(id));
-    return `@${d ? d.short_name || d.long_name || d.node_id : `!${Number(id).toString(16).padStart(8, "0")}`}`;
+    return `@${d ? d.short_name || d.long_name || d.node_id : nodeIdHex(Number(id))}`;
   };
 
   return (

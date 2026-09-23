@@ -4,6 +4,7 @@
 uv sync
 uv run pytest                 # no hardware needed
 uv run ruff check src tests
+npm --prefix webui run lint   # eslint + prettier --check; `run format` fixes formatting
 npm --prefix webui run dev    # UI with hot reload, proxies /api to :8080
 ```
 
@@ -17,7 +18,7 @@ src/mesh_vnode/
   vnode_server.py   the TCP server the phone apps connect to; replay and cursors
   protocol.py       framing-level knowledge of the Meshtastic phone protocol
   db.py             SQLite store: packets, nodes, config frames, clients, prefs
-  web.py            FastAPI app: JSON API, websocket fan-out, serves webui/dist
+  web/              FastAPI app: one router per area, websocket fan-out, serves webui/dist
   series.py         telemetry and position history for the graphs
   fakenode.py       a simulated node, for tests and for running without hardware
 webui/              Vite + React + TypeScript, Tailwind, MapLibre, Recharts

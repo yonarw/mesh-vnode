@@ -20,6 +20,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { clockTime } from "./ui";
 
 export const SERIES = ["#3987e5", "#d95926", "#199e70"] as const;
 
@@ -37,33 +38,30 @@ export interface Series {
   color: string;
 }
 
-export const shortTime = (unix: number) =>
-  new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const secondsTime = (unix: number) =>
   new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const dayTime = (unix: number) =>
-  new Date(unix * 1000).toLocaleDateString([], { day: "numeric", month: "short" });
+const dayTime = (unix: number) => new Date(unix * 1000).toLocaleDateString([], { day: "numeric", month: "short" });
 
 /** Pick an x-axis label granularity from the span actually on screen, so a
  *  short window does not print the same minute five times and a month does not
  *  print only clock times. */
 function timeFormatter(data: Record<string, number | null>[], key: string) {
-  if (data.length < 2) return shortTime;
+  if (data.length < 2) return clockTime;
   const span = (data[data.length - 1][key] ?? 0) - (data[0][key] ?? 0);
   if (span < 10 * 60) return secondsTime;
   if (span > 3 * 86400) return dayTime;
-  return shortTime;
+  return clockTime;
 }
 
 // Compact y ticks: 200000 does not fit a 38px axis, 200k does.
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 // Three decimals, trimmed: a 4.350-4.360 V range needs them, 12 does not.
 const yTick = (v: number) => (Math.abs(v) >= 10000 ? compact.format(v) : String(Number(v.toFixed(3))));
-export const hourRange = (unix: number) => {
+const hourRange = (unix: number) => {
   const d = new Date(unix * 1000);
   return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${d.getHours()}:00`;
 };
-export const fullTime = (unix: number) =>
+const fullTime = (unix: number) =>
   new Date(unix * 1000).toLocaleString([], {
     day: "numeric",
     month: "short",
@@ -176,29 +174,29 @@ export function TimeSeries({
           {series.map((s) => {
             const lonely = isolatedPoints(data, s.key);
             return (
-            <Line
-              key={s.key}
-              type="monotone"
-              dataKey={s.key}
-              name={s.name}
-              stroke={s.color}
-              strokeWidth={2}
-              dot={
-                lonely.size
-                  ? (p: { index: number; cx: number; cy: number }) =>
-                      lonely.has(p.index) ? (
-                        <circle key={p.index} cx={p.cx} cy={p.cy} r={3} fill={s.color} />
-                      ) : (
-                        <g key={p.index} />
-                      )
-                  : false
-              }
-              activeDot={{ r: 4, strokeWidth: 2, stroke: SURFACE }}
-              // Each chart gets rows of one kind, so a null is a real gap
-              // (inserted where samples stopped) and must break the line.
-              connectNulls={false}
-              {...STATIC}
-            />
+              <Line
+                key={s.key}
+                type="monotone"
+                dataKey={s.key}
+                name={s.name}
+                stroke={s.color}
+                strokeWidth={2}
+                dot={
+                  lonely.size
+                    ? (p: { index: number; cx: number; cy: number }) =>
+                        lonely.has(p.index) ? (
+                          <circle key={p.index} cx={p.cx} cy={p.cy} r={3} fill={s.color} />
+                        ) : (
+                          <g key={p.index} />
+                        )
+                    : false
+                }
+                activeDot={{ r: 4, strokeWidth: 2, stroke: SURFACE }}
+                // Each chart gets rows of one kind, so a null is a real gap
+                // (inserted where samples stopped) and must break the line.
+                connectNulls={false}
+                {...STATIC}
+              />
             );
           })}
         </LineChart>
@@ -225,10 +223,7 @@ export function StackedHours({
           {legendProps(series)}
           <XAxis dataKey="hour" tickFormatter={timeFormatter(data, "hour")} minTickGap={36} {...AXIS_PROPS} />
           <YAxis allowDecimals={false} width={40} tickFormatter={yTick} {...AXIS_PROPS} />
-          <Tooltip
-            cursor={{ fill: "#ffffff10" }}
-            content={<VizTooltip labelFormatter={hourRange} />}
-          />
+          <Tooltip cursor={{ fill: "#ffffff10" }} content={<VizTooltip labelFormatter={hourRange} />} />
           {series.map((s) => (
             <Bar
               key={s.key}

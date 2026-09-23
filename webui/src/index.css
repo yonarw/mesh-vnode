@@ -30,7 +30,12 @@ body {
   margin: 0;
   background: var(--color-ink-950);
   color: var(--color-mist-200);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 

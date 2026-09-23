@@ -78,6 +78,7 @@ class VNodeServer:
         # What live traffic apps get, per category (protocol.FORWARD_CATEGORIES):
         # "all", "favorites" or "none". Set from the web UI's settings.
         self.forward_policy: dict[str, str] = {}
+        self.allow_admin = settings.allow_admin
 
     # ------------------------------------------------------------- lifecycle
 
@@ -221,7 +222,7 @@ class VNodeServer:
             self._handlers.add(task)
             task.add_done_callback(self._handlers.discard)
 
-        row = self.db.get_or_create_client(key, label=host)
+        row = await asyncio.to_thread(self.db.get_or_create_client, key, host)
         client.cursor = int(row["last_seq"])
         self.clients[cid] = client
 
@@ -382,7 +383,7 @@ class VNodeServer:
         read_only = variant in proto.READ_ONLY_ADMIN_VARIANTS
         target = proto.node_id(pkt.to) if pkt.to else "its node"
 
-        if not self.settings.allow_admin:
+        if not self.allow_admin:
             allowed = flag_change is not None or (read_only and self.settings.allow_admin_reads)
             if not allowed:
                 routine = variant in proto.ROUTINE_BLOCKED_ADMIN_VARIANTS
@@ -478,7 +479,7 @@ class VNodeServer:
         are special and ask for a subset.
         """
         client.live = False
-        frames = self.db.config_frames()
+        frames = await asyncio.to_thread(self.db.config_frames)
         if not any(f["kind"] == "my_info" for f in frames):
             logger.warning("vnode: no captured config yet, cannot serve %s", client.peer)
             self.db.log_event("warn", "client", f"config requested by {client.peer} before capture")
@@ -515,7 +516,9 @@ class VNodeServer:
             "vnode: sent %d config frames to client %s (nonce=%s)", len(selected), client.cid, nonce
         )
 
-        replay_rows = self._replay_rows(client) if self.settings.replay_enabled else []
+        replay_rows = []
+        if self.settings.replay_enabled:
+            replay_rows = await asyncio.to_thread(self._replay_rows, client)
 
         # After config_complete, which is what every client tested handles.
         self._write(client, proto.build_config_complete(nonce or 1))

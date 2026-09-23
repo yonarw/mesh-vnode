@@ -21,25 +21,27 @@ class VNodeApp:
         # Where the node address comes from, strongest first: --node on the
         # command line, then the web UI's setting, then VNODE_UPSTREAM_HOST.
         self.cli_upstream = cli_upstream
-        self._env_upstream = (settings.upstream_host, settings.upstream_port)
-        # Whether anything actually supplied that address, or it is only the
-        # built-in default. Read before the line below overwrites the field,
-        # which would otherwise mark it as set.
-        self._env_upstream_set = "upstream_host" in settings.model_fields_set
-        if not cli_upstream:
-            settings.upstream_host, settings.upstream_port = self.upstream_target()
-        self._env_allow_admin = settings.allow_admin
-        self.apply_admin_pref()
-        self.upstream = Upstream(settings, self.db)
+        self.upstream = Upstream(settings, self.db, *self.upstream_target())
         self.server = VNodeServer(settings, self.db, self.upstream)
+        self.apply_admin_pref()
         self.apply_forward_pref()
         self._prune_task: asyncio.Task | None = None
+
+    @property
+    def upstream_fallback(self) -> tuple[str, int]:
+        """The address without a web UI setting."""
+        return self.settings.upstream_host, self.settings.upstream_port
+
+    @property
+    def upstream_fallback_set(self) -> bool:
+        """Whether VNODE_UPSTREAM_HOST was given, or the fallback is only the default."""
+        return "upstream_host" in self.settings.model_fields_set
 
     def apply_admin_pref(self) -> None:
         """Let apps change the node's settings if the web UI says so, else
         whatever VNODE_ALLOW_ADMIN says."""
         stored = self.db.prefs().get("allow_admin")
-        self.settings.allow_admin = self._env_allow_admin if stored is None else bool(stored)
+        self.server.allow_admin = self.settings.allow_admin if stored is None else bool(stored)
 
     def apply_forward_pref(self) -> None:
         """What live traffic apps get; everything unless the web UI says less."""
@@ -48,10 +50,10 @@ class VNodeApp:
 
     def upstream_target(self) -> tuple[str, int]:
         """The node address the web UI's settings call for."""
+        host, port = self.upstream_fallback
         if self.cli_upstream:
-            return self.settings.upstream_host, self.settings.upstream_port
+            return host, port
         prefs = self.db.prefs()
-        host, port = self._env_upstream
         return prefs.get("upstream_host") or host, prefs.get("upstream_port") or port
 
     async def start(self) -> None:
@@ -60,8 +62,8 @@ class VNodeApp:
         self._prune_task = asyncio.create_task(self._prune_loop())
         logger.info(
             "vnode: up. node %s:%s -> virtual node :%s, replay=%s",
-            self.settings.upstream_host,
-            self.settings.upstream_port,
+            self.upstream.host,
+            self.upstream.port,
             self.settings.listen_port,
             self.settings.replay_mode,
         )

@@ -1,7 +1,9 @@
 import { api, useResource, type EventRow, type KnownClient, type Status as StatusT } from "../api";
+import { useTick } from "../live";
 import { Card, Empty, Pill, Stat, relTime } from "../ui";
 
-export default function Status({ status, tick }: { status: StatusT | null; tick: number }) {
+export default function Status({ status }: { status: StatusT | null }) {
+  const tick = useTick("status");
   const clients = useResource(() => api.clients(), [tick]);
   const events = useResource<EventRow[]>(() => api.events(60), [tick]);
 
@@ -21,7 +23,9 @@ export default function Status({ status, tick }: { status: StatusT | null; tick:
               <span title={[up.my_long_name, up.my_node_id].filter(Boolean).join(" · ")}>
                 {up.my_short_name ?? up.my_node_id ?? "unknown"}
                 {up.my_short_name && up.my_node_id && (
-                  <span className="block truncate font-mono text-[11px] font-normal text-mist-400">{up.my_node_id}</span>
+                  <span className="block truncate font-mono text-[11px] font-normal text-mist-400">
+                    {up.my_node_id}
+                  </span>
                 )}
               </span>
             }
@@ -30,12 +34,11 @@ export default function Status({ status, tick }: { status: StatusT | null; tick:
           <Stat label="Firmware" value={up.firmware ?? "—"} />
           <Stat label="Up since" value={relTime(up.connected_since)} />
         </div>
-        {up.last_error && (
-          <p className="mt-3 text-xs text-alert-400">last error: {up.last_error}</p>
-        )}
+        {up.last_error && <p className="mt-3 text-xs text-alert-400">last error: {up.last_error}</p>}
         <p className="mt-3 text-xs text-mist-400">
-          {up.config_frames} config frames captured {up.config_captured_at ? relTime(up.config_captured_at) : "in an earlier run"}.
-          These are replayed verbatim to every app that connects.
+          {up.config_frames} config frames captured{" "}
+          {up.config_captured_at ? relTime(up.config_captured_at) : "in an earlier run"}. These are replayed verbatim to
+          every app that connects.
         </p>
       </Card>
 
@@ -79,7 +82,10 @@ export default function Status({ status, tick }: { status: StatusT | null; tick:
         ) : (
           <ul className="space-y-2">
             {clients.data.known.map((c: KnownClient) => (
-              <li key={c.client_key} className="flex items-center justify-between gap-3 rounded-lg border border-ink-700 bg-ink-800/60 px-3 py-2 text-xs">
+              <li
+                key={c.client_key}
+                className="flex items-center justify-between gap-3 rounded-lg border border-ink-700 bg-ink-800/60 px-3 py-2 text-xs"
+              >
                 <div className="min-w-0">
                   <div className="truncate font-mono text-mist-200">{c.client_key}</div>
                   <div className="mt-0.5 text-mist-400">

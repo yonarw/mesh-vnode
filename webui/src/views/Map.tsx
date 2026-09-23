@@ -8,19 +8,30 @@ import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibr
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, useResource, type MapProvider, type MapStyle, type Node, type TrackPoint } from "../api";
+import { useTick } from "../live";
 import { usePrefs } from "../prefs";
-import { Empty, nodeLabel, relTime } from "../ui";
+import {
+  Chip,
+  Empty,
+  distanceLabel,
+  hopsLabel,
+  nodeLabel,
+  oneOf,
+  precisionMeters,
+  relTime,
+  useStoredState,
+} from "../ui";
 import NodeSheet from "./NodeSheet";
 
-type Heard = "24h" | "7d" | "any";
+const HEARD = ["24h", "7d", "any"] as const;
+type Heard = (typeof HEARD)[number];
 const HEARD_SECONDS: Record<Heard, number | null> = { "24h": 86400, "7d": 604800, any: null };
 
 /** How far back of a selected node's track to draw. The track itself is
  *  fetched once for 7 days, so switching span is a client-side filter. */
-type Span = "1h" | "3h" | "6h" | "24h" | "all";
-const SPANS: Span[] = ["1h", "3h", "6h", "24h", "all"];
+const SPANS = ["1h", "3h", "6h", "24h", "all"] as const;
+type Span = (typeof SPANS)[number];
 const SPAN_SECONDS: Record<Span, number | null> = { "1h": 3600, "3h": 10800, "6h": 21600, "24h": 86400, all: null };
-const SPAN_LABEL: Record<Span, string> = { "1h": "1h", "3h": "3h", "6h": "6h", "24h": "24h", all: "All" };
 
 /** Track age ramp: newest bright amber, oldest a dim slate that sinks into
  *  the basemap. Positions are 0 (newest) to 1 (the far end of the span). */
@@ -34,7 +45,13 @@ const rgb = (hex: string): number[] => [1, 3, 5].map((i) => parseInt(hex.slice(i
 
 function mixHex(a: string, b: string, t: number): string {
   const [x, y] = [rgb(a), rgb(b)];
-  return `#${x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("")}`;
+  return `#${x
+    .map((v, i) =>
+      Math.round(v + (y[i] - v) * t)
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
 }
 
 /** The ramp evaluated in JS, for the per-vertex stops of a line gradient. */
@@ -88,13 +105,6 @@ function withKey(url: string, key: string): string {
   }
 }
 
-/** Half a grid cell, in metres: how far the true position can be from the
- *  shared one. Same arithmetic as the firmware's precision table. */
-export function precisionMeters(bits: number | null): number {
-  if (!bits || bits >= 32) return 0;
-  return (2 ** (32 - bits) * 1e-7 * 111_320) / 2;
-}
-
 function circle(lon: number, lat: number, meters: number, steps = 48): [number, number][] {
   const out: [number, number][] = [];
   const dLat = meters / 111_320;
@@ -119,7 +129,12 @@ function toGeoJSON(nodes: Node[]) {
     };
     points.push({ type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] }, properties: props });
     const r = precisionMeters(n.precision_bits);
-    if (r > 0) areas.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [circle(lon, lat, r)] }, properties: props });
+    if (r > 0)
+      areas.push({
+        type: "Feature",
+        geometry: { type: "Polygon", coordinates: [circle(lon, lat, r)] },
+        properties: props,
+      });
   }
   return {
     points: { type: "FeatureCollection", features: points } as GeoJSON.FeatureCollection,
@@ -155,12 +170,23 @@ function trackGeoJSON(points: TrackPoint[], windowSecs: number | null): GeoJSON.
   return {
     type: "FeatureCollection",
     features: [
-      ...(coords.length > 1 ? [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} } as GeoJSON.Feature] : []),
-      ...points.map((p) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [p.longitude, p.latitude] },
-        properties: { age: age(p.time) },
-      }) as GeoJSON.Feature),
+      ...(coords.length > 1
+        ? [
+            {
+              type: "Feature",
+              geometry: { type: "LineString", coordinates: coords },
+              properties: {},
+            } as GeoJSON.Feature,
+          ]
+        : []),
+      ...points.map(
+        (p) =>
+          ({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [p.longitude, p.latitude] },
+            properties: { age: age(p.time) },
+          }) as GeoJSON.Feature,
+      ),
     ],
   };
 }
@@ -196,34 +222,29 @@ function trackGradient(points: TrackPoint[], windowSecs: number | null): maplibr
   return ["interpolate", ["linear"], ["line-progress"], ...stops] as maplibregl.ExpressionSpecification;
 }
 
-const COLORS = ["match", ["get", "kind"], "local", "#60a5fa", "favorite", "#fbbf24", "#4ade80"] as maplibregl.ExpressionSpecification;
+const COLORS = [
+  "match",
+  ["get", "kind"],
+  "local",
+  "#60a5fa",
+  "favorite",
+  "#fbbf24",
+  "#4ade80",
+] as maplibregl.ExpressionSpecification;
 
 export default function MapView({
-  tick,
   onMessage,
   focus,
 }: {
-  tick: number;
   onMessage: (n: Node) => void;
   /** A node to centre on, e.g. from "Map" in the node list. */
   focus: number | null;
 }) {
   const { prefs } = usePrefs();
+  const tick = useTick("nodes");
   const nodes = useResource<Node[]>(() => api.nodes(), [tick]);
-  const [heard, setHeard] = useState<Heard>(() => {
-    try {
-      return (localStorage.getItem("vnode.mapHeard") as Heard) || "7d";
-    } catch {
-      return "7d";
-    }
-  });
-  const [span, setSpan] = useState<Span>(() => {
-    try {
-      return (localStorage.getItem("vnode.mapTrackSpan") as Span) || "all";
-    } catch {
-      return "all";
-    }
-  });
+  const [heard, setHeard] = useStoredState<Heard>("vnode.mapHeard", "7d", oneOf(HEARD));
+  const [span, setSpan] = useStoredState<Span>("vnode.mapTrackSpan", "all", oneOf(SPANS));
   const [selected, setSelected] = useState<number | null>(focus);
   // The full card over the map, where the node can also be asked for a
   // traceroute or a fresh position.
@@ -233,22 +254,8 @@ export default function MapView({
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const fitted = useRef(false);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("vnode.mapHeard", heard);
-    } catch {
-      /* fine */
-    }
-  }, [heard]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("vnode.mapTrackSpan", span);
-    } catch {
-      /* fine */
-    }
-  }, [span]);
+  // Bumped when a (new) map finished loading, so the data effects re-run.
+  const [loaded, setLoaded] = useState(0);
 
   const placed = useMemo(() => {
     const now = Date.now() / 1000;
@@ -299,8 +306,18 @@ export default function MapView({
       m.addSource("nodes", { type: "geojson", data: EMPTY });
       // lineMetrics: line-progress (and so line-gradient) is only defined with it.
       m.addSource("track", { type: "geojson", data: EMPTY, lineMetrics: true });
-      m.addLayer({ id: "areas-fill", type: "fill", source: "areas", paint: { "fill-color": COLORS, "fill-opacity": 0.08 } });
-      m.addLayer({ id: "areas-line", type: "line", source: "areas", paint: { "line-color": COLORS, "line-opacity": 0.5, "line-width": 1 } });
+      m.addLayer({
+        id: "areas-fill",
+        type: "fill",
+        source: "areas",
+        paint: { "fill-color": COLORS, "fill-opacity": 0.08 },
+      });
+      m.addLayer({
+        id: "areas-line",
+        type: "line",
+        source: "areas",
+        paint: { "line-color": COLORS, "line-opacity": 0.5, "line-width": 1 },
+      });
       // Below the nodes, so the dots stay clickable.
       m.addLayer({
         id: "track-line",
@@ -358,9 +375,6 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, style, key, prefs === null]);
 
-  // Bumped when a (new) map finished loading, so the data effect re-runs.
-  const [loaded, setLoaded] = useState(0);
-
   useEffect(() => {
     const m = map.current;
     if (!m) return;
@@ -372,10 +386,13 @@ export default function MapView({
       // else (no own position) everything placed.
       const target = placed.find((n) => n.node_num === focus) ?? placed.find((n) => n.is_local);
       if (target) {
-        m.fitBounds(aroundBounds(target.longitude as number, target.latitude as number, focus ? 2_000 : OPENING_RADIUS_M), {
-          padding: 20,
-          duration: 0,
-        });
+        m.fitBounds(
+          aroundBounds(target.longitude as number, target.latitude as number, focus ? 2_000 : OPENING_RADIUS_M),
+          {
+            padding: 20,
+            duration: 0,
+          },
+        );
       } else {
         const bounds = new maplibregl.LngLatBounds();
         for (const n of placed) bounds.extend([n.longitude as number, n.latitude as number]);
@@ -391,7 +408,8 @@ export default function MapView({
     setSelected(focus);
     const n = placed.find((p) => p.node_num === focus);
     const m = map.current;
-    if (n && m && fitted.current) m.flyTo({ center: [n.longitude as number, n.latitude as number], zoom: Math.max(m.getZoom(), 13) });
+    if (n && m && fitted.current)
+      m.flyTo({ center: [n.longitude as number, n.latitude as number], zoom: Math.max(m.getZoom(), 13) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus]);
 
@@ -439,17 +457,10 @@ export default function MapView({
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="no-scrollbar -mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
-        {(["24h", "7d", "any"] as Heard[]).map((h) => (
-          <button
-            key={h}
-            onClick={() => setHeard(h)}
-            aria-pressed={heard === h}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium ${
-              heard === h ? "border-accent-400/60 bg-accent-400/15 text-accent-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
-            }`}
-          >
+        {HEARD.map((h) => (
+          <Chip key={h} on={heard === h} onClick={() => setHeard(h)}>
             {h === "any" ? "Any time" : `Heard ${h}`}
-          </button>
+          </Chip>
         ))}
         <span className="ml-auto shrink-0 pl-2 text-[11px] text-mist-400">
           {placed.length} on the map · {withoutPosition} without a position
@@ -472,24 +483,24 @@ export default function MapView({
             <div className="mb-1 text-[10px] uppercase tracking-wide text-mist-400">Track</div>
             <div className="flex items-center gap-1">
               {SPANS.map((sp) => (
-                <button
+                <Chip
                   key={sp}
+                  small
+                  on={span === sp}
                   onClick={() => setSpan(sp)}
-                  aria-pressed={span === sp}
                   title={sp === "all" ? "All stored positions (up to 7 days)" : `Positions from the past ${sp}`}
-                  className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${
-                    span === sp ? "border-accent-400/60 bg-accent-400/15 text-accent-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
-                  }`}
                 >
-                  {SPAN_LABEL[sp]}
-                </button>
+                  {sp === "all" ? "All" : sp}
+                </Chip>
               ))}
             </div>
             <div className="mt-1.5 flex items-center gap-1.5">
               <span className="text-[10px] text-mist-400">new</span>
               <span
                 className="h-1.5 w-20 rounded-full"
-                style={{ background: `linear-gradient(to right, ${AGE_RAMP.map(([at, c]) => `${c} ${at * 100}%`).join(", ")})` }}
+                style={{
+                  background: `linear-gradient(to right, ${AGE_RAMP.map(([at, c]) => `${c} ${at * 100}%`).join(", ")})`,
+                }}
               />
               <span className="text-[10px] text-mist-400">old</span>
             </div>
@@ -510,15 +521,15 @@ export default function MapView({
           <NodeSheet
             nodeNum={details.node_num}
             fallback={{ short: details.short_name, long: details.long_name, id: details.node_id }}
-            tick={tick}
             onClose={() => setDetails(null)}
           />
         )}
       </div>
       <p className="hidden px-1 text-[11px] text-mist-400 sm:block">
         <span className="text-accent-400">●</span> this node · <span className="text-warn-400">●</span> favourites ·{" "}
-        <span className="text-signal-400">●</span> others. Circles show how far a blurred position can be off. Favourites
-        are shown however long ago they were heard. A selected node's track fades from amber (newest) to slate (oldest).
+        <span className="text-signal-400">●</span> others. Circles show how far a blurred position can be off.
+        Favourites are shown however long ago they were heard. A selected node's track fades from amber (newest) to
+        slate (oldest).
       </p>
     </div>
   );
@@ -542,11 +553,7 @@ function NodeCard({
 }) {
   const r = precisionMeters(n.precision_bits);
   const precision =
-    n.precision_bits === null
-      ? "precision unknown"
-      : r === 0
-        ? "exact position"
-        : `within ±${r >= 1000 ? `${(r / 1000).toFixed(1)} km` : `${Math.round(r)} m`}`;
+    n.precision_bits === null ? "precision unknown" : r === 0 ? "exact position" : `within ±${distanceLabel(r)}`;
   return (
     <div className="absolute inset-x-2 bottom-2 rounded-xl border border-ink-700 bg-ink-900/95 p-3 text-xs shadow-xl sm:right-auto sm:w-72">
       <div className="flex items-start justify-between gap-2">
@@ -564,7 +571,7 @@ function NodeCard({
       <div className="mt-2 space-y-0.5 text-mist-400">
         <div>
           Heard {relTime(n.last_heard)}
-          {n.hops_away !== null && ` · ${n.hops_away === 0 ? "direct" : `${n.hops_away} hops`}`}
+          {n.hops_away !== null && ` · ${hopsLabel(n.hops_away)}`}
           {n.snr !== null && ` · ${n.snr.toFixed(1)} dB`}
         </div>
         <div>

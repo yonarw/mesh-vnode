@@ -270,10 +270,7 @@ export interface AppForward {
 }
 
 export type PrefsPatch = Partial<
-  Omit<
-    Prefs,
-    "upstream_source" | "upstream_host" | "upstream_port" | "upstream_fallback" | "upstream_fallback_set"
-  >
+  Omit<Prefs, "upstream_source" | "upstream_host" | "upstream_port" | "upstream_fallback" | "upstream_fallback_set">
 > & {
   upstream_host?: string | null;
   upstream_port?: number | null;

@@ -8,11 +8,14 @@ synthesise itself (config_complete, queue status).
 from __future__ import annotations
 
 import contextlib
-from typing import Any
+from typing import Any, TypeVar
 
+from google.protobuf.message import Message
 from meshtastic.protobuf import admin_pb2, config_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
 
 BROADCAST_NUM = 0xFFFFFFFF
+
+M = TypeVar("M", bound=Message)
 
 PORT_TEXT = portnums_pb2.PortNum.TEXT_MESSAGE_APP  # 1
 PORT_POSITION = portnums_pb2.PortNum.POSITION_APP  # 3
@@ -128,23 +131,26 @@ def packet_meta(packet: mesh_pb2.MeshPacket) -> dict[str, Any]:
         meta["reply_id"] = packet.decoded.reply_id
         meta["emoji"] = packet.decoded.emoji
         if meta["portnum"] == PORT_TEXT:
-            try:
-                meta["text"] = packet.decoded.payload.decode("utf-8", errors="replace")
-            except Exception:  # pragma: no cover - decode already tolerant
-                meta["text"] = None
+            meta["text"] = packet.decoded.payload.decode("utf-8", errors="replace")
     return meta
 
 
-def decode_nodeinfo(packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None:
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_NODEINFO:
+def decode_payload(packet: mesh_pb2.MeshPacket, port: int, message_type: type[M]) -> M | None:
+    """The payload of a packet on `port`, parsed as `message_type`, or None."""
+    if not packet.HasField("decoded") or packet.decoded.portnum != port:
         return None
-    user = mesh_pb2.User()
+    msg = message_type()
     try:
-        user.ParseFromString(packet.decoded.payload)
+        msg.ParseFromString(packet.decoded.payload)
     except Exception:
         return None
+    return msg
+
+
+def user_fields(user: mesh_pb2.User, num: int) -> dict[str, Any]:
+    """A User, as columns of the `nodes` table."""
     return {
-        "node_id": user.id or node_id(packet.__getattribute__("from")),
+        "node_id": user.id or node_id(num),
         "long_name": user.long_name or None,
         "short_name": user.short_name or None,
         "hw_model": mesh_pb2.HardwareModel.Name(user.hw_model) if user.hw_model else None,
@@ -154,15 +160,13 @@ def decode_nodeinfo(packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None:
     }
 
 
+def decode_nodeinfo(packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None:
+    user = decode_payload(packet, PORT_NODEINFO, mesh_pb2.User)
+    return user_fields(user, packet.__getattribute__("from")) if user is not None else None
+
+
 def decode_position(packet: mesh_pb2.MeshPacket) -> mesh_pb2.Position | None:
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_POSITION:
-        return None
-    pos = mesh_pb2.Position()
-    try:
-        pos.ParseFromString(packet.decoded.payload)
-    except Exception:
-        return None
-    return pos
+    return decode_payload(packet, PORT_POSITION, mesh_pb2.Position)
 
 
 def position_fields(pos: mesh_pb2.Position, heard_at: int | None = None) -> dict[str, Any]:
@@ -216,12 +220,8 @@ ONLINE_WINDOW_S = 2 * 3600
 
 def decode_telemetry(packet: mesh_pb2.MeshPacket) -> tuple[str, dict[str, Any]] | None:
     """Return (kind, values) for a telemetry packet."""
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_TELEMETRY:
-        return None
-    tel = telemetry_pb2.Telemetry()
-    try:
-        tel.ParseFromString(packet.decoded.payload)
-    except Exception:
+    tel = decode_payload(packet, PORT_TELEMETRY, telemetry_pb2.Telemetry)
+    if tel is None:
         return None
     variant = tel.WhichOneof("variant")
     if variant is None:
@@ -344,15 +344,9 @@ def decode_routing(packet: mesh_pb2.MeshPacket) -> tuple[int, str] | None:
     whose `request_id` is that packet's id. `error_reason` NONE is an ack,
     anything else a failure (NO_RESPONSE, MAX_RETRANSMIT, PKI_FAILED, ...).
     """
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_ROUTING:
-        return None
+    routing = decode_payload(packet, PORT_ROUTING, mesh_pb2.Routing)
     request_id = packet.decoded.request_id
-    if not request_id:
-        return None
-    routing = mesh_pb2.Routing()
-    try:
-        routing.ParseFromString(packet.decoded.payload)
-    except Exception:
+    if routing is None or not request_id:
         return None
     return request_id, mesh_pb2.Routing.Error.Name(routing.error_reason)
 
@@ -476,12 +470,8 @@ def decode_route_discovery(packet: mesh_pb2.MeshPacket) -> dict[str, Any] | None
     but need not. Each SNR list has one more entry than its route: the last one
     is the final hop into the node that reports it.
     """
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_TRACEROUTE:
-        return None
-    rd = mesh_pb2.RouteDiscovery()
-    try:
-        rd.ParseFromString(packet.decoded.payload)
-    except Exception:
+    rd = decode_payload(packet, PORT_TRACEROUTE, mesh_pb2.RouteDiscovery)
+    if rd is None:
         return None
     return {
         "route": list(rd.route),
@@ -567,22 +557,16 @@ def refreshed_node_info(
     only added once its node info (name, key) has been heard, the way the
     firmware's own list fills. Returns None when there is nothing to store.
     """
-    frm = packet.__getattribute__("from")
     fr = parse_from_radio(raw) if raw else None
-    port = packet.decoded.portnum if packet.HasField("decoded") else None
-    user = None
-    if port == PORT_NODEINFO:
-        user = mesh_pb2.User()
-        try:
-            user.ParseFromString(packet.decoded.payload)
-        except Exception:
-            user = None
+    user = decode_payload(packet, PORT_NODEINFO, mesh_pb2.User)
     if fr is None:
         if user is None:
             return None
         fr = mesh_pb2.FromRadio()
-        fr.node_info.num = frm
+        fr.node_info.num = packet.__getattribute__("from")
     info = fr.node_info
+    pos = decode_position(packet)
+    tel = decode_payload(packet, PORT_TELEMETRY, telemetry_pb2.Telemetry)
 
     if user is not None:
         # Keep a key we already had if this announcement leaves it out.
@@ -590,24 +574,12 @@ def refreshed_node_info(
         info.user.CopyFrom(user)
         if not info.user.public_key and known_key:
             info.user.public_key = known_key
-    elif port == PORT_POSITION:
-        pos = mesh_pb2.Position()
-        try:
-            pos.ParseFromString(packet.decoded.payload)
-        except Exception:
-            pos = None
-        if pos is not None and (pos.latitude_i or pos.longitude_i):
-            info.position.CopyFrom(pos)
-            if not info.position.time:
-                info.position.time = packet.rx_time or now
-    elif port == PORT_TELEMETRY:
-        tel = telemetry_pb2.Telemetry()
-        try:
-            tel.ParseFromString(packet.decoded.payload)
-        except Exception:
-            tel = None
-        if tel is not None and tel.WhichOneof("variant") == "device_metrics":
-            info.device_metrics.CopyFrom(tel.device_metrics)
+    elif pos is not None and (pos.latitude_i or pos.longitude_i):
+        info.position.CopyFrom(pos)
+        if not info.position.time:
+            info.position.time = packet.rx_time or now
+    elif tel is not None and tel.WhichOneof("variant") == "device_metrics":
+        info.device_metrics.CopyFrom(tel.device_metrics)
 
     info.last_heard = packet.rx_time or now
     if packet.rx_snr:
@@ -687,14 +659,7 @@ def describe_admin(packet: mesh_pb2.MeshPacket) -> tuple[str | None, str]:
 
 
 def parse_admin(packet: mesh_pb2.MeshPacket) -> admin_pb2.AdminMessage | None:
-    if not packet.HasField("decoded") or packet.decoded.portnum != PORT_ADMIN:
-        return None
-    msg = admin_pb2.AdminMessage()
-    try:
-        msg.ParseFromString(packet.decoded.payload)
-    except Exception:
-        return None
-    return msg
+    return decode_payload(packet, PORT_ADMIN, admin_pb2.AdminMessage)
 
 
 def safe_admin_change(packet: mesh_pb2.MeshPacket) -> tuple[str, int] | None:

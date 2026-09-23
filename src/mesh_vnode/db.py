@@ -16,6 +16,7 @@ thousand rows a day; this is not a bottleneck.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -23,6 +24,8 @@ import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
+
+from . import protocol as proto
 
 SCHEMA_VERSION = 4
 
@@ -241,6 +244,7 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._batch_depth = 0
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
@@ -251,7 +255,7 @@ class Database:
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
-            self._conn.commit()
+            self._commit()
 
     def _stored_version(self) -> int:
         """The schema version on disk: current for a new file, 0 for one that
@@ -271,20 +275,16 @@ class Database:
                 if column not in existing:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             # Version 1 also stored position, node info and telemetry packets.
-            self._conn.execute("DELETE FROM packets WHERE portnum != 1")
+            self._conn.execute("DELETE FROM packets WHERE portnum != ?", (proto.PORT_TEXT,))
             self._backfill_reply_fields()
 
     def _backfill_reply_fields(self) -> None:
         """Fill reply_id/emoji for rows stored before those columns existed,
         from the raw bytes kept for every packet."""
-        from meshtastic.protobuf import mesh_pb2
-
         rows = self._conn.execute("SELECT seq, raw FROM packets WHERE reply_id IS NULL").fetchall()
         for row in rows:
-            fr = mesh_pb2.FromRadio()
             try:
-                fr.ParseFromString(row["raw"])
-                decoded = fr.packet.decoded
+                decoded = proto.parse_from_radio(row["raw"]).packet.decoded
                 reply_id, emoji = decoded.reply_id, decoded.emoji
             except Exception:
                 reply_id, emoji = 0, 0
@@ -299,10 +299,25 @@ class Database:
 
     # ---------------------------------------------------------------- helpers
 
+    @contextlib.contextmanager
+    def batch(self):
+        """Hold the lock and commit once at the end rather than per statement."""
+        with self._lock:
+            self._batch_depth += 1
+            try:
+                yield
+            finally:
+                self._batch_depth -= 1
+                self._commit()
+
+    def _commit(self) -> None:
+        if not self._batch_depth:
+            self._conn.commit()
+
     def _exec(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
             cur = self._conn.execute(sql, params)
-            self._conn.commit()
+            self._commit()
             return cur
 
     def _query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
@@ -350,7 +365,7 @@ class Database:
                     _now() if meta.get("origin") else None,
                 ),
             )
-            self._conn.commit()
+            self._commit()
             return cur.lastrowid if cur.rowcount else None
 
     def _after_filter(
@@ -440,7 +455,7 @@ class Database:
                 "UPDATE packets SET status = ?, status_detail = ?, status_at = ? WHERE seq = ?",
                 (status, detail, _now(), row["seq"]),
             )
-            self._conn.commit()
+            self._commit()
             return {"seq": row["seq"], "packet_id": packet_id, "status": status, "detail": detail}
 
     def max_seq(self) -> int:
@@ -456,20 +471,31 @@ class Database:
         node_num: int | None = None,
     ) -> list[sqlite3.Row]:
         """Text messages for the web UI, newest first."""
-        sql = "SELECT * FROM packets WHERE portnum = 1"
-        params: list[Any] = []
+        sql = "SELECT * FROM packets WHERE portnum = ?"
+        params: list[Any] = [proto.PORT_TEXT]
         if before_seq is not None:
             sql += " AND seq < ?"
             params.append(before_seq)
         if channel is not None:
-            sql += " AND channel = ? AND to_num = 4294967295"
-            params.append(channel)
+            sql += " AND channel = ? AND to_num = ?"
+            params.extend([channel, proto.BROADCAST_NUM])
         if node_num is not None:
             sql += " AND (from_num = ? OR to_num = ?)"
             params.extend([node_num, node_num])
         sql += " ORDER BY seq DESC LIMIT ?"
         params.append(limit)
         return self._query(sql, params)
+
+    def dm_peers(self, my_num: int) -> list[sqlite3.Row]:
+        """Everyone we have direct messages with, most recent first, with the
+        latest text (SQLite takes bare columns from the MAX() row)."""
+        return self._query(
+            "SELECT CASE WHEN from_num = ? THEN to_num ELSE from_num END AS node_num, "
+            "COUNT(*) AS count, MAX(rx_time) AS last_time, text AS last_text "
+            "FROM packets WHERE portnum = ? AND emoji = 0 AND to_num != ? "
+            "GROUP BY node_num ORDER BY last_time DESC",
+            (my_num, proto.PORT_TEXT, proto.BROADCAST_NUM),
+        )
 
     def count_traffic(self, rx_time: int, portnum: int) -> None:
         hour = (rx_time // 3600) * 3600
@@ -489,10 +515,11 @@ class Database:
             """
             SELECT
               (SELECT COUNT(*) FROM packets)                AS packets,
-              (SELECT COUNT(*) FROM packets WHERE portnum=1) AS texts,
+              (SELECT COUNT(*) FROM packets WHERE portnum = ?) AS texts,
               (SELECT COUNT(*) FROM nodes)                  AS nodes,
               (SELECT COUNT(*) FROM telemetry)              AS telemetry
-            """
+            """,
+            (proto.PORT_TEXT,),
         )[0]
         return {k: int(row[k]) for k in row.keys()}  # noqa: SIM118 - sqlite3.Row
 
@@ -545,7 +572,7 @@ class Database:
             for table in self.CLEARED_TABLES:
                 removed[table] = self._conn.execute(f"DELETE FROM {table}").rowcount
             self._conn.execute("DELETE FROM sqlite_sequence")
-            self._conn.commit()
+            self._commit()
             self._conn.execute("VACUUM")
         return removed
 
@@ -579,7 +606,7 @@ class Database:
                 "INSERT INTO config_frames(key, kind, ord, raw, updated_at) VALUES (?,?,?,?,?)",
                 [(k, kind, o, raw, _now()) for k, kind, o, raw in frames],
             )
-            self._conn.commit()
+            self._commit()
 
     # ------------------------------------------------------------------ nodes
 
@@ -632,8 +659,6 @@ class Database:
             return
         self.upsert_node(node_num, fields)
 
-        from . import protocol as proto  # local import: protocol imports nothing from here
-
         key = f"node_info:{node_num}"
         with self._lock:
             row = self._conn.execute(
@@ -647,7 +672,7 @@ class Database:
                     "UPDATE config_frames SET raw = ?, updated_at = ? WHERE key = ?",
                     (patched, _now(), key),
                 )
-                self._conn.commit()
+                self._commit()
 
     def store_position(self, node_num: int, fields: dict[str, Any]) -> bool:
         """Add a point to a node's track, unless it has not moved since the
@@ -676,7 +701,7 @@ class Database:
                     fields.get("precision_bits"),
                 ),
             )
-            self._conn.commit()
+            self._commit()
             return True
 
     def track(self, node_num: int, since: int) -> list[sqlite3.Row]:
@@ -699,14 +724,12 @@ class Database:
         conversation in the Android app, which files PKI DMs under channel 8
         and plain ones under their channel number. Returns the rows fixed.
         """
-        from . import protocol as proto  # local import: protocol imports nothing from here
-
         with self._lock:
             rows = self._conn.execute(
                 "SELECT p.seq, p.raw FROM packets p JOIN nodes n ON n.node_num = p.to_num "
-                "WHERE p.origin = ? AND p.from_num = ? AND p.pki = 0 AND p.to_num != 4294967295 "
+                "WHERE p.origin = ? AND p.from_num = ? AND p.pki = 0 AND p.to_num != ? "
                 "AND p.channel = 0 AND n.public_key IS NOT NULL",
-                (origin, my_num),
+                (origin, my_num, proto.BROADCAST_NUM),
             ).fetchall()
             for row in rows:
                 fr = proto.parse_from_radio(row["raw"])
@@ -715,7 +738,7 @@ class Database:
                     "UPDATE packets SET pki = 1, raw = ? WHERE seq = ?",
                     (fr.SerializeToString(), row["seq"]),
                 )
-            self._conn.commit()
+            self._commit()
             return len(rows)
 
     def refresh_node_frame(self, node_num: int, packet: Any, now: int) -> None:
@@ -725,8 +748,6 @@ class Database:
         A new node goes right after the last node entry, where the firmware
         lists it, ahead of anything that follows (file info).
         """
-        from . import protocol as proto  # local import: protocol imports nothing from here
-
         key = f"node_info:{node_num}"
         with self._lock:
             if self._conn.execute("SELECT 1 FROM config_frames LIMIT 1").fetchone() is None:
@@ -752,7 +773,7 @@ class Database:
                     "INSERT INTO config_frames(key, kind, ord, raw, updated_at) VALUES (?,?,?,?,?)",
                     (key, "node_info", last + 1, raw, now),
                 )
-            self._conn.commit()
+            self._commit()
 
     def node(self, node_num: int) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM nodes WHERE node_num = ?", (node_num,))

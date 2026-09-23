@@ -43,5 +43,18 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
 
 export const usePrefs = () => useContext(Ctx);
 
+/** A conversation: a channel or a direct message. The name is filled in
+ *  once known; a target from a link or a notification arrives without it. */
+export type Target = { kind: "channel"; index: number; name: string } | { kind: "dm"; node: number; name: string };
+
+/** "ch:<index>" or "dm:<node_num>", as muted conversations and links name them. */
 export const convKey = (t: { kind: "channel"; index: number } | { kind: "dm"; node: number }) =>
   t.kind === "channel" ? `ch:${t.index}` : `dm:${t.node}`;
+
+export function parseConvKey(key: string | null | undefined): Target | null {
+  const m = key?.match(/^(ch|dm):(\d+)$/);
+  if (!m) return null;
+  return m[1] === "ch"
+    ? { kind: "channel", index: Number(m[2]), name: "" }
+    : { kind: "dm", node: Number(m[2]), name: "" };
+}

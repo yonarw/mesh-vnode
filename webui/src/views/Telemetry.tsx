@@ -1,7 +1,27 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { api, useResource, type DisplayMode, type TelemetryNode, type TelemetrySample, type TrafficBucket } from "../api";
+import {
+  api,
+  useResource,
+  type DisplayMode,
+  type TelemetryNode,
+  type TelemetrySample,
+  type TrafficBucket,
+} from "../api";
+import { useTick } from "../live";
 import { usePrefs } from "../prefs";
-import { Card, Empty, Pill, Stat, nodeLabel, relTime } from "../ui";
+import {
+  Card,
+  Chip,
+  Empty,
+  Pill,
+  Segmented,
+  Stat,
+  batteryLabel,
+  distanceLabel,
+  nodeLabel,
+  precisionMeters,
+  relTime,
+} from "../ui";
 import { ChartNote, SERIES, StackedHours, TimeSeries } from "../viz";
 
 const RANGES = [
@@ -21,7 +41,10 @@ type Row = Record<string, number | null>;
 function seriesOf(samples: TelemetrySample[], kinds: string[], pick: (s: TelemetrySample) => Row): Row[] {
   const rows = samples.filter((s) => kinds.includes(s.kind)).map((s) => ({ t: s.rx_time, ...pick(s) }) as Row);
   if (rows.length < 3) return rows;
-  const gaps = rows.slice(1).map((r, i) => (r.t as number) - (rows[i].t as number)).sort((a, b) => a - b);
+  const gaps = rows
+    .slice(1)
+    .map((r, i) => (r.t as number) - (rows[i].t as number))
+    .sort((a, b) => a - b);
   const typical = gaps[Math.floor(gaps.length / 2)];
   const limit = Math.max(typical * 5, 600);
   const out: Row[] = [rows[0]];
@@ -44,7 +67,8 @@ const latest = (rows: Row[], key: string): number | null => {
   return null;
 };
 
-export default function Telemetry({ tick }: { tick: number }) {
+export default function Telemetry() {
+  const tick = useTick("telemetry");
   const [hours, setHours] = useState(24);
   const nodes = useResource<TelemetryNode[]>(() => api.telemetryNodes(), [tick]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -61,29 +85,14 @@ export default function Telemetry({ tick }: { tick: number }) {
       {/* One filter row above the charts: range, then which node. */}
       <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1">
         {RANGES.map((r) => (
-          <button
-            key={r.hours}
-            onClick={() => setHours(r.hours)}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium ${
-              hours === r.hours
-                ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-                : "border-ink-700 bg-ink-800/70 text-mist-400"
-            }`}
-          >
+          <Chip key={r.hours} on={hours === r.hours} onClick={() => setHours(r.hours)}>
             {r.label}
-          </button>
+          </Chip>
         ))}
-        <button
-          onClick={() => setCustomising((c) => !c)}
-          aria-pressed={customising}
-          className={`ml-auto shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium ${
-            customising
-              ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-              : "border-ink-700 bg-ink-800/70 text-mist-400"
-          }`}
-        >
+        <span className="ml-auto" />
+        <Chip on={customising} onClick={() => setCustomising((c) => !c)}>
           {customising ? "Done" : "Customise"}
-        </button>
+        </Chip>
       </div>
 
       {!nodes.data?.length ? (
@@ -93,17 +102,9 @@ export default function Telemetry({ tick }: { tick: number }) {
       ) : (
         <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1">
           {nodes.data.map((n) => (
-            <button
-              key={n.node_num}
-              onClick={() => setSelected(n.node_num)}
-              className={`shrink-0 rounded-full border px-3 py-1.5 text-xs ${
-                active?.node_num === n.node_num
-                  ? "border-accent-400/60 bg-accent-400/15 text-accent-400"
-                  : "border-ink-700 bg-ink-800/70 text-mist-400"
-              }`}
-            >
+            <Chip key={n.node_num} on={active?.node_num === n.node_num} onClick={() => setSelected(n.node_num)}>
               {n.is_local ? "This node" : `★ ${nodeLabel(n)}`}
-            </button>
+            </Chip>
           ))}
         </div>
       )}
@@ -144,8 +145,6 @@ interface Widget {
   note?: (d: Data, local: boolean) => ReactNode;
   right?: (d: Data) => ReactNode;
 }
-
-const powered = (v: number) => (v > 100 ? "powered" : `${Math.round(v)}%`);
 
 /** The node database is a fixed-size array compiled into the firmware: 10 on an
  *  STM32WL, 80 on an nRF52, 200 or 250 on an ESP32-S3 depending on its flash,
@@ -270,7 +269,7 @@ const WIDGETS: Widget[] = [
     series: [{ key: "battery", name: "charge", color: SERIES[0] }],
     unit: "%",
     domain: [0, 101],
-    format: powered,
+    format: batteryLabel,
     right: (d) => <Pill>{relTime(latestTime(d.device))}</Pill>,
     note: (d) => ((latest(d.device, "battery") ?? 0) > 100 ? "101% is how the firmware reports external power." : null),
   },
@@ -307,6 +306,12 @@ const WIDGETS: Widget[] = [
     unit: "hPa",
     digits: 1,
   },
+];
+
+const DISPLAY_MODES: { value: DisplayMode; label: string }[] = [
+  { value: "graph", label: "Graph" },
+  { value: "number", label: "Number" },
+  { value: "hidden", label: "Hide" },
 ];
 
 function fmt(w: Widget, v: number): string {
@@ -401,20 +406,7 @@ function NodeTelemetry({
             {present.map(({ w }) => (
               <li key={w.id} className="flex items-center justify-between gap-2 py-1.5">
                 <span className="min-w-0 truncate text-xs text-mist-200">{w.title}</span>
-                <div className="flex shrink-0 overflow-hidden rounded-full border border-ink-700">
-                  {(["graph", "number", "hidden"] as DisplayMode[]).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setMode(w.id, m)}
-                      aria-pressed={modeOf(w.id) === m}
-                      className={`px-2.5 py-1 text-[11px] font-medium ${
-                        modeOf(w.id) === m ? "bg-accent-400/15 text-accent-400" : "text-mist-400"
-                      }`}
-                    >
-                      {m === "graph" ? "Graph" : m === "number" ? "Number" : "Hide"}
-                    </button>
-                  ))}
-                </div>
+                <Segmented options={DISPLAY_MODES} value={modeOf(w.id)} onChange={(m) => setMode(w.id, m)} />
               </li>
             ))}
           </ul>
@@ -468,10 +460,7 @@ function LocalTraffic({ hours, tick }: { hours: number; tick: number }) {
 }
 
 function precisionLabel(bits: number): string {
-  if (bits >= 32) return "shares exact position";
-  const meters = (2 ** (32 - bits) * 1e-7 * 111_320) / 2;
-  const text = meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
-  return `shares position to ±${text}`;
+  return bits >= 32 ? "shares exact position" : `shares position to ±${distanceLabel(precisionMeters(bits))}`;
 }
 
 function latestTime(rows: Row[]): number | null {
@@ -480,7 +469,10 @@ function latestTime(rows: Row[]): number | null {
 
 function TrafficCard({ buckets }: { buckets: TrafficBucket[] }) {
   const { data, totals } = useMemo(() => {
-    const byHour = new Map<number, { hour: number; text: number; position: number; telemetry: number; other: number }>();
+    const byHour = new Map<
+      number,
+      { hour: number; text: number; position: number; telemetry: number; other: number }
+    >();
     const sums = { text: 0, position: 0, telemetry: 0, other: 0 };
     for (const b of buckets) {
       const row = byHour.get(b.hour) ?? { hour: b.hour, text: 0, position: 0, telemetry: 0, other: 0 };
@@ -527,4 +519,3 @@ function TrafficCard({ buckets }: { buckets: TrafficBucket[] }) {
     </Card>
   );
 }
-

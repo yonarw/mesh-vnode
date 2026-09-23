@@ -1,9 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { api, useLiveEvents, useResource, type Channel, type Node, type Status as StatusT } from "./api";
+import { TicksContext, useTicks } from "./live";
 import { maybeNotify, onNotificationOpen } from "./notify";
-import { PrefsProvider, usePrefs } from "./prefs";
-import { Pill } from "./ui";
-import Messages, { type Target } from "./views/Messages";
+import { PrefsProvider, parseConvKey, usePrefs, type Target } from "./prefs";
+import { Empty, Pill } from "./ui";
+import Messages from "./views/Messages";
 import Nodes from "./views/Nodes";
 import Settings from "./views/Settings";
 import Status from "./views/Status";
@@ -30,13 +31,8 @@ const WIDE_TABS = new Set<TabId>(["map", "telemetry"]);
 function parseHash(): { tab: TabId; conv: Target | null; mapNode: number | null } {
   const [id, conv] = location.hash.replace("#", "").split("/");
   const tab: TabId = id === "settings" || TABS.some((t) => t.id === id) ? (id as TabId) : "messages";
-  let target: Target | null = null;
-  const m = conv?.match(/^(ch|dm):(\d+)$/);
-  if (tab === "messages" && m) {
-    target = m[1] === "ch" ? { kind: "channel", index: Number(m[2]), name: "" } : { kind: "dm", node: Number(m[2]), name: "" };
-  }
   const mapNode = tab === "map" && /^\d+$/.test(conv ?? "") ? Number(conv) : null;
-  return { tab, conv: target, mapNode };
+  return { tab, conv: tab === "messages" ? parseConvKey(conv) : null, mapNode };
 }
 
 export default function App() {
@@ -75,11 +71,8 @@ function Shell() {
     setTab(id);
   };
 
-  // Bumped whenever something happens upstream; views re-fetch on change.
-  const [tick, setTick] = useState(0);
-  const bump = useCallback(() => setTick((t) => t + 1), []);
-
-  const status = useResource<StatusT>(() => api.status(), [tick]);
+  const { ticks, bump } = useTicks();
+  const status = useResource<StatusT>(() => api.status(), [ticks.status]);
   const { prefs } = usePrefs();
   const channels = useResource<Channel[]>(() => api.channels(), [status.data?.upstream.config_captured_at]);
   // The conversation on screen, so a message there does not also ping.
@@ -102,7 +95,7 @@ function Shell() {
   const online = useLiveEvents(
     useCallback(
       (ev) => {
-        bump();
+        bump(ev.event);
         if (ev.event === "packet" && typeof ev.payload.seq === "number") {
           const c = live.current;
           void maybeNotify(ev.payload.seq, {
@@ -119,7 +112,7 @@ function Shell() {
 
   // Fallback poll, in case the socket is up but silent.
   useEffect(() => {
-    const id = window.setInterval(bump, 30000);
+    const id = window.setInterval(() => bump(), 30000);
     return () => window.clearInterval(id);
   }, [bump]);
 
@@ -131,86 +124,81 @@ function Shell() {
   }, [me]);
 
   return (
-    <div
-      className={`mx-auto flex h-full flex-col overflow-x-hidden px-4 ${
-        // Messages and lists read better in a column; the map and the charts
-        // are the two views that actually want the pixels. Capped rather than
-        // unbounded so an ultrawide does not stretch the header across a metre.
-        WIDE_TABS.has(tab) ? "max-w-[1600px]" : "max-w-3xl"
-      }`}
-    >
-      <header className="safe-top flex items-center justify-between gap-3 py-3">
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold text-mist-200" title={up?.my_node_id ?? undefined}>
-            {me ?? "mesh-vnode"}
-            {up?.my_long_name && up.my_short_name && (
-              <span className="ml-2 text-xs font-normal text-mist-400">{up.my_long_name}</span>
-            )}
-          </h1>
-          <p className="truncate text-[11px] text-mist-400">
-            mesh-vnode · {status.data?.counts.texts ?? 0} messages stored
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {up?.connected ? <Pill tone="good">node</Pill> : <Pill tone="bad">node</Pill>}
-          {online ? <Pill tone="good">live</Pill> : <Pill tone="warn">live</Pill>}
-          <button
-            onClick={() => go("settings")}
-            aria-label="Settings"
-            title="Settings"
-            className={`ml-1 rounded-full p-1.5 text-base leading-none ${
-              tab === "settings" ? "bg-accent-400/15 text-accent-400" : "text-mist-400 hover:text-mist-200"
-            }`}
-          >
-            ⚙
-          </button>
-        </div>
-      </header>
-
-      <nav className="mb-3 flex gap-1 rounded-xl border border-ink-700 bg-ink-900/80 p-1">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => go(t.id)}
-            className={`min-w-0 flex-1 truncate rounded-lg px-1.5 py-2 text-xs font-medium transition ${
-              tab === t.id ? "bg-accent-400/15 text-accent-400" : "text-mist-400 hover:text-mist-200"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-4">
-        {status.error && (
-          <div className="mb-3 rounded-lg border border-alert-400/40 bg-alert-400/10 px-3 py-2 text-xs text-alert-400">
-            API unreachable: {status.error}
+    <TicksContext.Provider value={ticks}>
+      <div
+        className={`mx-auto flex h-full flex-col overflow-x-hidden px-4 ${
+          // Messages and lists read better in a column; the map and the charts
+          // are the two views that actually want the pixels. Capped rather than
+          // unbounded so an ultrawide does not stretch the header across a metre.
+          WIDE_TABS.has(tab) ? "max-w-[1600px]" : "max-w-3xl"
+        }`}
+      >
+        <header className="safe-top flex items-center justify-between gap-3 py-3">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold text-mist-200" title={up?.my_node_id ?? undefined}>
+              {me ?? "mesh-vnode"}
+              {up?.my_long_name && up.my_short_name && (
+                <span className="ml-2 text-xs font-normal text-mist-400">{up.my_long_name}</span>
+              )}
+            </h1>
+            <p className="truncate text-[11px] text-mist-400">
+              mesh-vnode · {status.data?.counts.texts ?? 0} messages stored
+            </p>
           </div>
-        )}
-        {tab === "messages" && (
-          <Messages
-            myNodeNum={up?.my_node_num ?? null}
-            tick={tick}
-            requested={requestedChat}
-            onViewing={setViewing}
-          />
-        )}
-        {tab === "nodes" && (
-          <Nodes tick={tick} onMessage={openDm} onShowOnMap={(n) => (location.hash = `map/${n.node_num}`)} />
-        )}
-        {tab === "map" && (
-          <Suspense fallback={<p className="py-8 text-center text-sm text-mist-400">Loading map…</p>}>
-            <MapView tick={tick} onMessage={openDm} focus={mapNode} />
-          </Suspense>
-        )}
-        {tab === "telemetry" && (
-          <Suspense fallback={<p className="py-8 text-center text-sm text-mist-400">Loading charts…</p>}>
-            <Telemetry tick={tick} />
-          </Suspense>
-        )}
-        {tab === "status" && <Status status={status.data} tick={tick} />}
-        {tab === "settings" && <Settings status={status.data} channels={channels.data ?? []} />}
-      </main>
-    </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {up?.connected ? <Pill tone="good">node</Pill> : <Pill tone="bad">node</Pill>}
+            {online ? <Pill tone="good">live</Pill> : <Pill tone="warn">live</Pill>}
+            <button
+              onClick={() => go("settings")}
+              aria-label="Settings"
+              title="Settings"
+              className={`ml-1 rounded-full p-1.5 text-base leading-none ${
+                tab === "settings" ? "bg-accent-400/15 text-accent-400" : "text-mist-400 hover:text-mist-200"
+              }`}
+            >
+              ⚙
+            </button>
+          </div>
+        </header>
+
+        <nav className="mb-3 flex gap-1 rounded-xl border border-ink-700 bg-ink-900/80 p-1">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => go(t.id)}
+              className={`min-w-0 flex-1 truncate rounded-lg px-1.5 py-2 text-xs font-medium transition ${
+                tab === t.id ? "bg-accent-400/15 text-accent-400" : "text-mist-400 hover:text-mist-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-4">
+          {status.error && (
+            <div className="mb-3 rounded-lg border border-alert-400/40 bg-alert-400/10 px-3 py-2 text-xs text-alert-400">
+              API unreachable: {status.error}
+            </div>
+          )}
+          {tab === "messages" && (
+            <Messages myNodeNum={up?.my_node_num ?? null} requested={requestedChat} onViewing={setViewing} />
+          )}
+          {tab === "nodes" && <Nodes onMessage={openDm} onShowOnMap={(n) => (location.hash = `map/${n.node_num}`)} />}
+          {tab === "map" && (
+            <Suspense fallback={<Empty>Loading map…</Empty>}>
+              <MapView onMessage={openDm} focus={mapNode} />
+            </Suspense>
+          )}
+          {tab === "telemetry" && (
+            <Suspense fallback={<Empty>Loading charts…</Empty>}>
+              <Telemetry />
+            </Suspense>
+          )}
+          {tab === "status" && <Status status={status.data} />}
+          {tab === "settings" && <Settings status={status.data} channels={channels.data ?? []} />}
+        </main>
+      </div>
+    </TicksContext.Provider>
   );
 }

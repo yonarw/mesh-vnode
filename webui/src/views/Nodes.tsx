@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, useResource, type Node } from "../api";
-import { Empty, Pill, batteryTone, nodeLabel, relTime } from "../ui";
+import { useTick } from "../live";
+import { Chip, Empty, NodePills, nodeLabel, oneOf, relTime, useStoredState } from "../ui";
 import NodeSheet from "./NodeSheet";
 
-type Heard = "1h" | "24h" | "7d" | "any";
-type Sort = "heard" | "name" | "snr" | "hops";
+const HEARD = ["1h", "24h", "7d", "any"] as const;
+const SORTS = ["heard", "name", "snr", "hops"] as const;
+type Heard = (typeof HEARD)[number];
+type Sort = (typeof SORTS)[number];
 
 interface Filters {
-  q: string;
   favoritesOnly: boolean;
   heard: Heard;
   directOnly: boolean;
@@ -15,59 +17,34 @@ interface Filters {
   sort: Sort;
 }
 
-const DEFAULTS: Filters = {
-  q: "",
-  favoritesOnly: false,
-  heard: "24h",
-  directOnly: false,
-  hideMqtt: false,
-  sort: "heard",
-};
+const DEFAULTS: Filters = { favoritesOnly: false, heard: "24h", directOnly: false, hideMqtt: false, sort: "heard" };
+
+const isFilters = (v: unknown): v is Filters =>
+  typeof v === "object" && v !== null && oneOf(HEARD)((v as Filters).heard) && oneOf(SORTS)((v as Filters).sort);
 
 const HEARD_SECONDS: Record<Heard, number | null> = { "1h": 3600, "24h": 86400, "7d": 604800, any: null };
 const PAGE = 60;
-const STORAGE_KEY = "vnode.nodeFilters";
-
-// Filters are a per-viewer convenience: remembered in this browser only, and
-// the page works the same if storage is unavailable.
-function loadFilters(): Filters {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...DEFAULTS, ...JSON.parse(raw), q: "" } : DEFAULTS;
-  } catch {
-    return DEFAULTS;
-  }
-}
-
-function saveFilters(f: Filters) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...f, q: "" }));
-  } catch {
-    /* private window, blocked storage: fine */
-  }
-}
 
 export default function Nodes({
-  tick,
   onMessage,
   onShowOnMap,
 }: {
-  tick: number;
   onMessage: (n: Node) => void;
   onShowOnMap: (n: Node) => void;
 }) {
+  const tick = useTick("nodes");
   const { data, loading, refresh } = useResource<Node[]>(() => api.nodes(), [tick]);
   // The node opened as a card: everything about one node, and where it is
   // asked for a traceroute or its position.
   const [opened, setOpened] = useState<Node | null>(null);
-  const [filters, setFilters] = useState<Filters>(loadFilters);
+  const [filters, setFilters] = useStoredState<Filters>("vnode.nodeFilters", DEFAULTS, isFilters);
+  const [q, setQ] = useState("");
   const [shown, setShown] = useState(PAGE);
   // Stars flipped here before the node confirms, keyed by node number.
   const [pending, setPending] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => saveFilters(filters), [filters]);
-  useEffect(() => setShown(PAGE), [filters]);
+  useEffect(() => setShown(PAGE), [filters, q]);
 
   const update = (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch }));
 
@@ -76,7 +53,7 @@ export default function Nodes({
     [data, pending],
   );
 
-  const { pinned, rest, total } = useMemo(() => applyFilters(nodes, filters), [nodes, filters]);
+  const { pinned, rest, total } = useMemo(() => applyFilters(nodes, filters, q), [nodes, filters, q]);
 
   const toggleFavorite = async (n: Node) => {
     const next = !n.is_favorite;
@@ -89,7 +66,8 @@ export default function Nodes({
       setError(`Could not ${next ? "star" : "unstar"} ${nodeLabel(n)}: ${e instanceof Error ? e.message : e}`);
     } finally {
       setPending((p) => {
-        const { [n.node_num]: _, ...others } = p;
+        const others = { ...p };
+        delete others[n.node_num];
         return others;
       });
     }
@@ -103,7 +81,7 @@ export default function Nodes({
 
   return (
     <div className="space-y-3">
-      <Toolbar filters={filters} update={update} matched={matched} total={total} />
+      <Toolbar filters={filters} update={update} q={q} setQ={setQ} matched={matched} total={total} />
 
       {error && (
         <div className="rounded-lg border border-alert-400/40 bg-alert-400/10 px-3 py-2 text-xs text-alert-400">
@@ -118,14 +96,30 @@ export default function Nodes({
           {pinned.length > 0 && (
             <Section title="This node & favourites">
               {pinned.map((n) => (
-                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} onOpen={setOpened} busy={n.node_num in pending} />
+                <NodeRow
+                  key={n.node_num}
+                  node={n}
+                  onStar={toggleFavorite}
+                  onMessage={onMessage}
+                  onShowOnMap={onShowOnMap}
+                  onOpen={setOpened}
+                  busy={n.node_num in pending}
+                />
               ))}
             </Section>
           )}
           {visibleRest.length > 0 && (
             <Section title={pinned.length ? "Everyone else" : undefined}>
               {visibleRest.map((n) => (
-                <NodeRow key={n.node_num} node={n} onStar={toggleFavorite} onMessage={onMessage} onShowOnMap={onShowOnMap} onOpen={setOpened} busy={n.node_num in pending} />
+                <NodeRow
+                  key={n.node_num}
+                  node={n}
+                  onStar={toggleFavorite}
+                  onMessage={onMessage}
+                  onShowOnMap={onShowOnMap}
+                  onOpen={setOpened}
+                  busy={n.node_num in pending}
+                />
               ))}
             </Section>
           )}
@@ -143,12 +137,7 @@ export default function Nodes({
       {opened && (
         <NodeSheet
           nodeNum={opened.node_num}
-          fallback={{
-            short: opened.short_name,
-            long: opened.long_name,
-            id: opened.node_id,
-          }}
-          tick={tick}
+          fallback={{ short: opened.short_name, long: opened.long_name, id: opened.node_id }}
           onClose={() => setOpened(null)}
         />
       )}
@@ -156,10 +145,10 @@ export default function Nodes({
   );
 }
 
-function applyFilters(nodes: Node[], f: Filters) {
+function applyFilters(nodes: Node[], f: Filters, search: string) {
   const now = Date.now() / 1000;
   const window = HEARD_SECONDS[f.heard];
-  const q = f.q.trim().toLowerCase();
+  const q = search.trim().toLowerCase();
 
   const matches = (n: Node) => {
     if (q) {
@@ -196,11 +185,15 @@ function applyFilters(nodes: Node[], f: Filters) {
 function Toolbar({
   filters,
   update,
+  q,
+  setQ,
   matched,
   total,
 }: {
   filters: Filters;
   update: (p: Partial<Filters>) => void;
+  q: string;
+  setQ: (q: string) => void;
   matched: number;
   total: number;
 }) {
@@ -208,8 +201,8 @@ function Toolbar({
     <div className="space-y-2">
       <div className="flex gap-2">
         <input
-          value={filters.q}
-          onChange={(e) => update({ q: e.target.value })}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
           placeholder="Search name, short name or !id"
           className="min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist-200 outline-none placeholder:text-mist-400 focus:border-accent-400/60"
         />
@@ -237,7 +230,7 @@ function Toolbar({
           Hide MQTT
         </Chip>
         <span className="mx-1 h-4 w-px shrink-0 bg-ink-700" />
-        {(["1h", "24h", "7d", "any"] as Heard[]).map((h) => (
+        {HEARD.map((h) => (
           <Chip key={h} on={filters.heard === h} onClick={() => update({ heard: h })}>
             {h === "any" ? "Any time" : `Heard ${h}`}
           </Chip>
@@ -245,33 +238,23 @@ function Toolbar({
       </div>
 
       <p className="text-[11px] text-mist-400">
-        {matched} of {total} nodes kept here · more than the radio itself lists, which holds a fixed
-        maximum and forgets the rest
+        {matched} of {total} nodes kept here · more than the radio itself lists, which holds a fixed maximum and forgets
+        the rest
         {filters.heard !== "any" && " · favourites are shown whenever they were last heard"}
       </p>
     </div>
   );
 }
 
-function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={on}
-      className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium ${
-        on ? "border-accent-400/60 bg-accent-400/15 text-accent-400" : "border-ink-700 bg-ink-800/70 text-mist-400"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function Section({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <section>
-      {title && <h2 className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wider text-mist-400">{title}</h2>}
-      <ul className="divide-y divide-ink-700 overflow-hidden rounded-xl border border-ink-700 bg-ink-900/80">{children}</ul>
+      {title && (
+        <h2 className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wider text-mist-400">{title}</h2>
+      )}
+      <ul className="divide-y divide-ink-700 overflow-hidden rounded-xl border border-ink-700 bg-ink-900/80">
+        {children}
+      </ul>
     </section>
   );
 }
@@ -295,7 +278,10 @@ function NodeRow({
   return (
     <li className={`flex items-start gap-2 px-3 py-2.5 ${n.is_ignored ? "opacity-50" : ""}`}>
       {n.is_local ? (
-        <span className="mt-0.5 w-8 shrink-0 text-center text-[10px] font-semibold text-accent-400" title="The node this service is connected to">
+        <span
+          className="mt-0.5 w-8 shrink-0 text-center text-[10px] font-semibold text-accent-400"
+          title="The node this service is connected to"
+        >
           ME
         </span>
       ) : (
@@ -330,16 +316,7 @@ function NodeRow({
           {n.hw_model && ` · ${n.hw_model}`}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {n.battery_level !== null && (
-            <Pill tone={batteryTone(n.battery_level)}>
-              {n.battery_level > 100 ? "powered" : `${n.battery_level}%`}
-              {n.voltage !== null && ` · ${n.voltage.toFixed(2)} V`}
-            </Pill>
-          )}
-          {n.snr !== null && <Pill>{n.snr.toFixed(1)} dB</Pill>}
-          {n.hops_away !== null && <Pill>{n.hops_away === 0 ? "direct" : `${n.hops_away} hop${n.hops_away > 1 ? "s" : ""}`}</Pill>}
-          {n.via_mqtt ? <Pill tone="warn">MQTT</Pill> : null}
-          {n.is_ignored ? <Pill>ignored</Pill> : null}
+          <NodePills node={n} />
           <span className="ml-auto flex gap-1.5">
             {hasPosition && (
               <button

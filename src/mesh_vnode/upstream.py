@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from meshtastic.protobuf import config_pb2, mesh_pb2
+from meshtastic.protobuf import mesh_pb2
 from meshtastic.tcp_interface import TCPInterface
 
 from . import protocol as proto
@@ -139,9 +139,13 @@ class _Interface(TCPInterface):
 class Upstream:
     """Owns the interface, the reconnect supervisor and the raw-frame fan-out."""
 
-    def __init__(self, settings: Settings, db: Database) -> None:
+    def __init__(
+        self, settings: Settings, db: Database, host: str | None = None, port: int | None = None
+    ) -> None:
         self.settings = settings
         self.db = db
+        self.host = host or settings.upstream_host
+        self.port = port or settings.upstream_port
         self.iface: _Interface | None = None
         self.connected = threading.Event()
         self.last_error: str | None = None
@@ -247,23 +251,18 @@ class Upstream:
         """
         backoff = 2
         while not self._stop.is_set():
-            host, port = self.settings.upstream_host, self.settings.upstream_port
+            host, port = self.host, self.port
+            target = f"{host}:{port}"
             if is_own_virtual_node(host, port, self.settings.listen_port):
-                self.last_error = (
-                    f"{host}:{port} is this service's own virtual node, not the real node"
-                )
+                self.last_error = f"{target} is this service's own virtual node, not the real node"
                 logger.error("vnode: refusing to connect: %s", self.last_error)
                 self._emit_state("error", self.last_error)
                 self._kick.wait(30)
                 self._kick.clear()
                 continue
             try:
-                self._emit_state(
-                    "connecting", f"{self.settings.upstream_host}:{self.settings.upstream_port}"
-                )
-                self.iface = _Interface(
-                    self.settings.upstream_host, self.settings.upstream_port, self
-                )
+                self._emit_state("connecting", target)
+                self.iface = _Interface(host, port, self)
                 self.connected.set()
                 self.connected_since = time.time()
                 self.last_error = None
@@ -280,7 +279,6 @@ class Upstream:
                     time.sleep(1)
             except Exception as exc:  # connection refused, DNS, timeout, ...
                 self.last_error = str(exc)
-                target = f"{self.settings.upstream_host}:{self.settings.upstream_port}"
                 hint = ""
                 if "Name or service not known" in str(exc) or "nodename nor servname" in str(exc):
                     hint = " - hostname does not resolve; use the node's IP (--node <ip>)"
@@ -339,11 +337,10 @@ class Upstream:
 
     def retarget(self, host: str, port: int) -> None:
         """Point the link at a different node and reconnect now."""
-        if (host, port) == (self.settings.upstream_host, self.settings.upstream_port):
+        if (host, port) == (self.host, self.port):
             return
         logger.info("vnode: upstream changed to %s:%s", host, port)
-        self.settings.upstream_host = host
-        self.settings.upstream_port = port
+        self.host, self.port = host, port
         self._kick.set()
 
     # ------------------------------------------------------------- accessors
@@ -363,8 +360,8 @@ class Upstream:
         iface = self.iface
         return {
             "connected": bool(self.connected.is_set()),
-            "host": self.settings.upstream_host,
-            "port": self.settings.upstream_port,
+            "host": self.host,
+            "port": self.port,
             "connected_since": self.connected_since,
             "config_captured_at": self.config_captured_at,
             "config_frames": len(self.db.config_frames()),
@@ -613,113 +610,108 @@ class Upstream:
         self, packet: mesh_pb2.MeshPacket, raw: bytes, origin: str | None = None
     ) -> int | None:
         meta = proto.packet_meta(packet)
-        from_num = meta["from_num"]
         rx = meta["rx_time"] or int(time.time())
-        portnum = meta["portnum"]
-
-        # Every packet counts toward the traffic chart, stored or not.
-        if origin is None:
-            self.db.count_traffic(rx, portnum)
-            # Keep the node list apps get on connect current: live position
-            # and telemetry may not be forwarded to them at all.
-            if from_num:
-                self.db.refresh_node_frame(from_num, packet, int(time.time()))
-                # Anything heard from a node proves it is alive, a text message
-                # as much as a beacon, and carries how many hops it took to get
-                # here. The port-specific handlers below add their richer
-                # fields on top.
-                self.db.upsert_node(
-                    from_num,
-                    {
-                        "last_heard": rx,
-                        "snr": meta["rx_snr"],
-                        **proto.heard_fields(packet),
-                    },
-                )
-
-        if portnum == proto.PORT_ROUTING:
-            routing = proto.decode_routing(packet)
-            if routing is not None and self.my_node_num:
-                request_id, error = routing
-                if self._routing_for_exchange(request_id, error):
-                    # It answers a request, not a message: no delivery log.
-                    return None
-                status, detail = proto.delivery_status(from_num, self.my_node_num, error)
-                if status == "failed":
-                    event = "nak"
-                elif status == "relayed":
-                    event = "implicit_ack"
-                else:
-                    event = "ack"
-                self._set_status(
-                    request_id,
-                    status,
-                    detail,
-                    f"routing from {proto.node_id(from_num)}",
-                    event,
-                    {
-                        "ack_from": from_num,
-                        "error": None if error == "NONE" else error,
-                        **proto.ack_details(packet),
-                    },
-                )
-
-        if portnum == proto.PORT_NODEINFO:
-            info = proto.decode_nodeinfo(packet)
-            if info:
-                self.db.upsert_node(
-                    from_num, {**info, "last_heard": meta["rx_time"], "snr": meta["rx_snr"]}
-                )
-        elif portnum == proto.PORT_POSITION:
-            pos = proto.decode_position(packet)
-            if pos is not None:
-                fields = proto.position_fields(pos, meta["rx_time"])
-                self.db.upsert_node(from_num, {**fields, "last_heard": meta["rx_time"]})
-                if self._tracked(from_num):
-                    self.db.store_position(from_num, fields)
-                quality = proto.position_quality(pos)
-                if quality and self._tracked(from_num):
-                    self.db.store_telemetry(from_num, rx, "gps", quality)
-        elif portnum == proto.PORT_TELEMETRY:
-            tel = proto.decode_telemetry(packet)
-            if tel:
-                kind, values = tel
-                if kind == "local":
-                    # The node's own counts describe its fixed-size database
-                    # only. Ours go in beside them, so the telemetry page can
-                    # show what the radio still remembers against what is here.
-                    values = {**values, **self.db.node_counts(rx - proto.ONLINE_WINDOW_S)}
-                if self._tracked(from_num):
-                    self.db.store_telemetry(from_num, rx, kind, values)
-                if kind == "device":
-                    self.db.upsert_node(
-                        from_num,
-                        {
-                            "battery_level": values.get("battery_level"),
-                            "voltage": values.get("voltage"),
-                            "last_heard": rx,
-                        },
-                    )
-
-        if origin is None and from_num != self.my_node_num:
-            self._note_exchange(packet, meta)
-
-        if portnum not in proto.STORED_PORTNUMS:
-            return None
-
-        if origin is None:
-            logger.info("vnode: text from the mesh: %s", proto.describe_packet(packet))
-
-        meta["origin"] = origin
-        seq = self.db.store_packet(raw=raw, meta=meta)
+        handlers = {
+            proto.PORT_ROUTING: self._on_routing,
+            proto.PORT_NODEINFO: self._on_nodeinfo,
+            proto.PORT_POSITION: self._on_position,
+            proto.PORT_TELEMETRY: self._on_telemetry,
+        }
+        with self.db.batch():
+            if origin is None:
+                self._on_heard(packet, meta, rx)
+            handler = handlers.get(meta["portnum"])
+            if handler is not None:
+                handler(packet, meta["from_num"], rx)
+            if origin is None and meta["from_num"] != self.my_node_num:
+                self._note_exchange(packet, meta)
+            if meta["portnum"] not in proto.STORED_PORTNUMS:
+                return None
+            if origin is None:
+                logger.info("vnode: text from the mesh: %s", proto.describe_packet(packet))
+            seq = self.db.store_packet(raw=raw, meta={**meta, "origin": origin})
         if seq is None:
             # Expected and frequent: the node re-delivers what it hears twice.
-            # Logged anyway, because "my message never showed up" and "it was
-            # filed as a duplicate" look identical from the outside.
+            # Logged anyway: "never showed up" and "filed as a duplicate" look alike.
             logger.debug("vnode: duplicate, not stored: %s", proto.describe_packet(packet))
         else:
             logger.debug("vnode: stored seq=%d %s", seq, proto.describe_packet(packet))
         return seq
+
+    def _on_heard(self, packet: mesh_pb2.MeshPacket, meta: dict, rx: int) -> None:
+        """What every packet from the mesh says: traffic, and that its sender
+        is alive and how many hops away."""
+        self.db.count_traffic(rx, meta["portnum"])
+        from_num = meta["from_num"]
+        if not from_num:
+            return
+        # Keeps the node list apps get on connect current, even when live
+        # position and telemetry are not forwarded to them.
+        self.db.refresh_node_frame(from_num, packet, int(time.time()))
+        self.db.upsert_node(
+            from_num, {"last_heard": rx, "snr": meta["rx_snr"], **proto.heard_fields(packet)}
+        )
+
+    def _on_routing(self, packet: mesh_pb2.MeshPacket, from_num: int, rx: int) -> None:
+        routing = proto.decode_routing(packet)
+        my_num = self.my_node_num
+        if routing is None or not my_num:
+            return
+        request_id, error = routing
+        if self._routing_for_exchange(request_id, error):
+            return  # it answers a request, not a message
+        status, detail = proto.delivery_status(from_num, my_num, error)
+        event = {"failed": "nak", "relayed": "implicit_ack"}.get(status, "ack")
+        self._set_status(
+            request_id,
+            status,
+            detail,
+            f"routing from {proto.node_id(from_num)}",
+            event,
+            {
+                "ack_from": from_num,
+                "error": None if error == "NONE" else error,
+                **proto.ack_details(packet),
+            },
+        )
+
+    def _on_nodeinfo(self, packet: mesh_pb2.MeshPacket, from_num: int, rx: int) -> None:
+        info = proto.decode_nodeinfo(packet)
+        if info:
+            self.db.upsert_node(from_num, {**info, "last_heard": rx, "snr": packet.rx_snr or None})
+
+    def _on_position(self, packet: mesh_pb2.MeshPacket, from_num: int, rx: int) -> None:
+        pos = proto.decode_position(packet)
+        if pos is None:
+            return
+        fields = proto.position_fields(pos, rx)
+        self.db.upsert_node(from_num, {**fields, "last_heard": rx})
+        if self._tracked(from_num):
+            self.db.store_position(from_num, fields)
+            quality = proto.position_quality(pos)
+            if quality:
+                self.db.store_telemetry(from_num, rx, "gps", quality)
+
+    def _on_telemetry(self, packet: mesh_pb2.MeshPacket, from_num: int, rx: int) -> None:
+        tel = proto.decode_telemetry(packet)
+        if not tel:
+            return
+        kind, values = tel
+        if kind == "local":
+            # The radio's own node counts cover its fixed-size database only;
+            # ours go in beside them for comparison.
+            values = {**values, **self.db.node_counts(rx - proto.ONLINE_WINDOW_S)}
+        if self._tracked(from_num):
+            self.db.store_telemetry(from_num, rx, kind, values)
+        if kind == "device":
+            self.db.upsert_node(
+                from_num,
+                {
+                    "battery_level": values.get("battery_level"),
+                    "voltage": values.get("voltage"),
+                    "last_heard": rx,
+                },
+            )
 
     # --------------------------------------------------------------- requests
 
@@ -825,32 +817,17 @@ class Upstream:
             self._apply_early_status(packet.id)
         return seq
 
-    def _store_nodeinfo_frame(self, info) -> None:
+    def _store_nodeinfo_frame(self, info: mesh_pb2.NodeInfo) -> None:
         fields = {
-            "node_id": info.user.id or proto.node_id(info.num),
-            "long_name": info.user.long_name or None,
-            "short_name": info.user.short_name or None,
-            "hw_model": (
-                mesh_pb2.HardwareModel.Name(info.user.hw_model) if info.user.hw_model else None
-            ),
-            "role": (
-                config_pb2.Config.DeviceConfig.Role.Name(info.user.role) if info.user.role else None
-            ),
+            **proto.user_fields(info.user, info.num),
+            **proto.position_fields(info.position),
             "last_heard": info.last_heard or None,
             "snr": info.snr or None,
             "hops_away": info.hops_away if info.HasField("hops_away") else None,
             "battery_level": info.device_metrics.battery_level or None,
-            "voltage": round(info.device_metrics.voltage, 3)
-            if info.device_metrics.voltage
-            else None,
+            "voltage": round(info.device_metrics.voltage, 3) or None,
             "is_favorite": int(info.is_favorite),
             "is_ignored": int(info.is_ignored),
             "via_mqtt": int(info.via_mqtt),
-            "public_key": bytes(info.user.public_key) or None,
         }
-        if info.position.latitude_i or info.position.longitude_i:
-            fields["latitude"] = info.position.latitude_i * 1e-7
-            fields["longitude"] = info.position.longitude_i * 1e-7
-            fields["precision_bits"] = info.position.precision_bits or None
-            fields["position_time"] = info.position.time or None
         self.db.upsert_node(info.num, fields)

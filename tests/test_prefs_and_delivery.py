@@ -123,7 +123,7 @@ def test_a_new_node_address_is_stored_and_used(api):
     prefs = http.put("/api/prefs", json={"upstream_host": "192.0.2.20"}).json()
     assert prefs["upstream_host"] == "192.0.2.20"
     assert prefs["upstream_source"] == "web ui"
-    assert vnode.settings.upstream_host == "192.0.2.20"
+    assert vnode.upstream.host == "192.0.2.20"
     assert vnode.upstream._kick.is_set()
 
 
@@ -163,14 +163,14 @@ def test_resetting_the_address_falls_back_to_the_environment(api):
     http, vnode = api
     http.put("/api/prefs", json={"upstream_host": "192.0.2.20"})
     http.put("/api/prefs", json={"upstream_host": None})
-    assert vnode.settings.upstream_host == "192.0.2.10"
+    assert vnode.upstream.host == "192.0.2.10"
 
 
 def test_the_stored_address_survives_a_restart(tmp_path):
     settings = Settings(db_path=tmp_path / "r.sqlite3", upstream_host="192.0.2.10")
     TestClient(create_app(settings)).put("/api/prefs", json={"upstream_host": "192.0.2.30"})
     fresh = create_app(Settings(db_path=tmp_path / "r.sqlite3", upstream_host="192.0.2.10"))
-    assert fresh.state.vnode.settings.upstream_host == "192.0.2.30"
+    assert fresh.state.vnode.upstream.host == "192.0.2.30"
 
 
 def test_the_command_line_wins_over_the_web_ui(tmp_path):
@@ -178,7 +178,7 @@ def test_the_command_line_wins_over_the_web_ui(tmp_path):
     TestClient(create_app(settings)).put("/api/prefs", json={"upstream_host": "192.0.2.30"})
     cli = Settings(db_path=tmp_path / "c.sqlite3", upstream_host="192.0.2.40")
     app = create_app(cli, cli_upstream=True)
-    assert app.state.vnode.settings.upstream_host == "192.0.2.40"
+    assert app.state.vnode.upstream.host == "192.0.2.40"
     res = TestClient(app).put("/api/prefs", json={"upstream_host": "192.0.2.50"})
     assert res.status_code == 409
     assert app.state.vnode.db.prefs()["upstream_host"] == "192.0.2.30"
@@ -360,9 +360,9 @@ def test_apps_can_be_allowed_to_change_settings_from_the_web_ui(api):
     http, vnode = api
     assert http.get("/api/prefs").json()["allow_admin"] is False
     assert http.put("/api/prefs", json={"allow_admin": True}).json()["allow_admin"] is True
-    assert vnode.settings.allow_admin is True
+    assert vnode.server.allow_admin is True
     http.put("/api/prefs", json={"allow_admin": None})
-    assert vnode.settings.allow_admin is False  # back to VNODE_ALLOW_ADMIN
+    assert vnode.server.allow_admin is False  # back to VNODE_ALLOW_ADMIN
 
 
 # ------------------------------------------------------------ self-connect
@@ -383,7 +383,7 @@ def test_the_web_ui_refuses_our_own_virtual_node(api):
     res = http.put("/api/prefs", json={"upstream_host": "127.0.0.1", "upstream_port": 4404})
     assert res.status_code == 422
     assert "own virtual node" in res.json()["detail"]
-    assert vnode.settings.upstream_host == "192.0.2.10"
+    assert vnode.upstream.host == "192.0.2.10"
     assert "upstream_host" not in vnode.db.prefs()
 
 
