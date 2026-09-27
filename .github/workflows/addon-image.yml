@@ -85,10 +85,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The tag is now a marker for `git checkout v0.1.1`, not an input to
-      # anything - the image above was built and named without it.
-      - name: Tag the release commit
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, so the notes can list the commits since the previous tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The tag is a marker for `git checkout v0.1.1`, not an input to anything -
+      # the image was built and named without it. The GitHub release is for
+      # people browsing the repo; the add-on store never looks at it.
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version='${{ needs.check.outputs.version }}'
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || true)
+          git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_SHA" \
+            | grep -v '^- Release v' > notes.md || true
           git tag "v$version" "$GITHUB_SHA"
           git push origin "v$version"
+          gh release create "v$version" --verify-tag --title "v$version" --notes-file notes.md

@@ -15,12 +15,16 @@
 #   webui/public/icon-*.png   manifest.webmanifest, phone home screen
 #   webui/public/apple-touch-icon.png   iOS, which composites on an opaque
 #                                       background - so this one gets BG.
+#   docs/images/social-preview.png      GitHub link cards; uploaded by hand under
+#                                       Settings > Social preview, not read from here.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
 MASTER="${1:-docs/images/icon-master.png}"
 BG="#0b1120"   # matches <meta name="theme-color"> in webui/index.html
+TAGLINE="One Meshtastic® node, many apps, no missed messages"
+HALO="#7b7b7b"  # outline around the social preview text
 
 [[ -f "$MASTER" ]] || { echo "no master image at $MASTER" >&2; exit 1; }
 command -v magick >/dev/null || { echo "needs ImageMagick (magick)" >&2; exit 1; }
@@ -47,9 +51,24 @@ magick "$MASTER" -background "$BG" -gravity center -filter Lanczos \
 # The store header is wide, so this one keeps the master's aspect ratio.
 magick "$MASTER" -background none -filter Lanczos -resize "250x100" addon/logo.png
 
+# GitHub's recommended 1280x640, transparent for the README. The text gets a
+# light halo - its own shape grown by a disk - so it reads on light and dark
+# themes. Fonts via fontconfig, so any sans works.
+text() {   # text <font> <size> <halo px> <y> <string>: one layer, composited
+    printf '%s\n' '(' -size 1280x640 xc:none -fill '#1f2937' \
+        -font "$(fc-match -f '%{file}' "$1")" -pointsize "$2" -annotate "+0+$4" "$5" \
+        '(' +clone -alpha extract -morphology Dilate "Disk:$3" -background "$HALO" -alpha shape ')' \
+        +swap -composite ')' -composite
+}
+mapfile -t name < <(text 'sans:bold' 76 2 385 'mesh-vnode')
+mapfile -t tag  < <(text 'sans' 36 1 495 "$TAGLINE")
+magick -size 1280x640 xc:none -gravity north \
+    \( "$MASTER" -filter Lanczos -resize "512x" \) -geometry +0+110 -composite +geometry \
+    "${name[@]}" "${tag[@]}" docs/images/social-preview.png
+
 echo "wrote:"
 for f in addon/icon.png addon/logo.png webui/public/favicon.png \
          webui/public/icon-192.png webui/public/icon-512.png \
-         webui/public/apple-touch-icon.png; do
+         webui/public/apple-touch-icon.png docs/images/social-preview.png; do
     printf '  %-36s %s\n' "$f" "$(magick identify -format '%wx%h' "$f")"
 done

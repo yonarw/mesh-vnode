@@ -13,8 +13,8 @@
 # the two disagree.
 name: Mesh vnode
 slug: mesh_vnode
-version: "0.2.4"
-description: A virtual node that remembers messages, for use with Meshtastic meshes
+version: "0.2.5"
+description: One Meshtastic node, many apps, no missed messages
 url: https://github.com/yonarw/mesh-vnode
 image: ghcr.io/yonarw/mesh-vnode
 arch:

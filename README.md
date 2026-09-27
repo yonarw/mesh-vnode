@@ -1,6 +1,4 @@
-# mesh-vnode
-
-A virtual node that remembers messages, for use with Meshtastic® meshes.
+<img src="docs/images/social-preview.png" alt="mesh-vnode: one Meshtastic® node, many apps, no missed messages" width="480">
 
 <a href="https://meshtastic.org"><img src="docs/images/m-powered.png" alt="Meshtastic Powered" height="22"></a>
 

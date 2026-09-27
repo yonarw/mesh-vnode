@@ -1,8 +1,8 @@
 # Mesh vnode
 
-A virtual node that remembers messages, for use with Meshtastic® meshes. It holds the
-connection to your node, stores the messages, and serves them to the Meshtastic app on
-port 4404 - including the ones the app missed while it was away.
+A virtual node that keeps your Meshtastic® node's messages for the app and the web UI. It
+holds the connection to your node, stores the messages, and serves them to the Meshtastic
+app on port 4404 - including the ones the app missed while it was away.
 
 ## Setting it up
 

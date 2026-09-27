@@ -1,7 +1,7 @@
 {
   "name": "mesh-vnode",
   "short_name": "vnode",
-  "description": "A virtual node that remembers messages, for use with Meshtastic® meshes",
+  "description": "One Meshtastic® node, many apps, no missed messages",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
