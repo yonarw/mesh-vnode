@@ -480,8 +480,8 @@ class Database:
             sql += " AND channel = ? AND to_num = ?"
             params.extend([channel, proto.BROADCAST_NUM])
         if node_num is not None:
-            sql += " AND (from_num = ? OR to_num = ?)"
-            params.extend([node_num, node_num])
+            sql += " AND to_num != ? AND (from_num = ? OR to_num = ?)"
+            params.extend([proto.BROADCAST_NUM, node_num, node_num])
         sql += " ORDER BY seq DESC LIMIT ?"
         params.append(limit)
         return self._query(sql, params)

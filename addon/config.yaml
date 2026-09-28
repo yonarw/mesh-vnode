@@ -13,7 +13,7 @@
 # the two disagree.
 name: Mesh vnode
 slug: mesh_vnode
-version: "0.2.5"
+version: "0.2.6"
 description: One Meshtastic node, many apps, no missed messages
 url: https://github.com/yonarw/mesh-vnode
 image: ghcr.io/yonarw/mesh-vnode

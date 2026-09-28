@@ -266,6 +266,13 @@ def test_reactions_do_not_count_as_the_last_message_of_a_chat(client):
     assert direct[0]["count"] == 1
 
 
+def test_a_peers_channel_messages_stay_out_of_the_direct_chat(client):
+    http, db = client
+    put(db, text_packet(FRIEND, 0x700, "to everyone"))
+    put(db, text_packet(FRIEND, 0x701, "to me", to=ME))
+    assert [m["text"] for m in http.get(f"/api/messages?node={FRIEND}").json()] == ["to me"]
+
+
 def test_web_sends_ask_for_an_ack_by_default():
     assert SendRequest(text="hi").want_ack is True
 
