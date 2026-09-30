@@ -100,30 +100,124 @@ function circle(lon: number, lat: number, meters: number, steps = 48): [number, 
   return out;
 }
 
-function toGeoJSON(nodes: Node[]) {
+/** Heard within this long counts as online, as ONLINE_WINDOW_S in the backend. */
+const ONLINE_S = 2 * 3600;
+
+const LOCAL_COLOR = "#60a5fa";
+const FAVORITE_COLOR = "#fbbf24";
+const UNKNOWN_HOPS_COLOR = "#94a3b8";
+const NAMELESS_COLOR = "#475569";
+/** By hops away: direct, 1, 2, 3, 4, and 5 or more. */
+const HOP_COLORS = ["#4ade80", "#2dd4bf", "#a78bfa", "#e879f9", "#fb7185", "#f4511e"];
+
+const nameless = (n: Node) => !n.short_name && !n.long_name;
+const online = (n: Node, now: number) => n.last_heard !== null && now - n.last_heard <= ONLINE_S;
+
+/** A node heard only by its position, never its node info, has no name to
+ *  show: it stays small, muted and unlabelled rather than showing its id. */
+function nodeProps(n: Node, now: number) {
+  return {
+    num: n.node_num,
+    label: n.short_name || n.long_name || "",
+    color: n.is_local
+      ? LOCAL_COLOR
+      : n.is_favorite
+        ? FAVORITE_COLOR
+        : nameless(n)
+          ? NAMELESS_COLOR
+          : n.hops_away === null
+            ? UNKNOWN_HOPS_COLOR
+            : HOP_COLORS[Math.min(n.hops_away, HOP_COLORS.length - 1)],
+    radius: n.is_local ? 7 : n.is_favorite ? 6 : nameless(n) ? 4 : 5,
+    opacity: n.is_local || online(n, now) ? 1 : 0.45,
+  };
+}
+
+/** Which node of a stack speaks for it: ours, favourites, then online and
+ *  near before stale and far, nameless last. */
+function rank(n: Node, now: number): number {
+  if (n.is_local) return 0;
+  if (n.is_favorite) return 1;
+  return 2 + (nameless(n) ? 20 : 0) + (online(n, now) ? 0 : 10) + (n.hops_away ?? 8) / 10;
+}
+
+/** Nodes at the very same coordinates. Blurred positions are snapped to the
+ *  centre of their grid cell, so on a busy mesh many nodes share one. */
+type Stack = { key: string; lon: number; lat: number; nodes: Node[] };
+
+const stackKey = (n: Node) => `${n.longitude},${n.latitude}`;
+
+function stackNodes(nodes: Node[]): Stack[] {
+  const now = Date.now() / 1000;
+  const stacks = new Map<string, Stack>();
+  for (const n of nodes) {
+    const key = stackKey(n);
+    const s = stacks.get(key);
+    if (s) s.nodes.push(n);
+    else stacks.set(key, { key, lon: n.longitude as number, lat: n.latitude as number, nodes: [n] });
+  }
+  for (const s of stacks.values()) s.nodes.sort((a, b) => rank(a, now) - rank(b, now));
+  return [...stacks.values()];
+}
+
+const feature = (geometry: GeoJSON.Geometry, properties: GeoJSON.GeoJsonProperties): GeoJSON.Feature => ({
+  type: "Feature",
+  geometry,
+  properties,
+});
+const collection = (features: GeoJSON.Feature[]): GeoJSON.FeatureCollection => ({
+  type: "FeatureCollection",
+  features,
+});
+
+/** Single nodes, and a counted dot for each stack except the fanned-out one.
+ *  Precision circles are drawn once per stack, not once per node in it. */
+function toGeoJSON(stacks: Stack[], fanned: string | null) {
+  const now = Date.now() / 1000;
   const points: GeoJSON.Feature[] = [];
   const areas: GeoJSON.Feature[] = [];
-  for (const n of nodes) {
-    const lon = n.longitude as number;
-    const lat = n.latitude as number;
-    const props = {
-      num: n.node_num,
-      label: n.short_name || n.node_id.slice(-4),
-      kind: n.is_local ? "local" : n.is_favorite ? "favorite" : "other",
-    };
-    points.push({ type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] }, properties: props });
-    const r = precisionMeters(n.precision_bits);
-    if (r > 0)
-      areas.push({
-        type: "Feature",
-        geometry: { type: "Polygon", coordinates: [circle(lon, lat, r)] },
-        properties: props,
-      });
+  for (const s of stacks) {
+    const top = nodeProps(s.nodes[0], now);
+    const at: GeoJSON.Point = { type: "Point", coordinates: [s.lon, s.lat] };
+    if (s.nodes.length === 1) points.push(feature(at, top));
+    else if (s.key !== fanned)
+      points.push(feature(at, { key: s.key, count: s.nodes.length, color: top.color, opacity: top.opacity }));
+    for (const r of new Set(s.nodes.map((n) => precisionMeters(n.precision_bits))))
+      if (r > 0) areas.push(feature({ type: "Polygon", coordinates: [circle(s.lon, s.lat, r)] }, { color: top.color }));
   }
-  return {
-    points: { type: "FeatureCollection", features: points } as GeoJSON.FeatureCollection,
-    areas: { type: "FeatureCollection", features: areas } as GeoJSON.FeatureCollection,
-  };
+  return { points: collection(points), areas: collection(areas) };
+}
+
+/** Spacing of a fanned-out stack, in screen pixels. */
+const FAN_MIN_RADIUS_PX = 30;
+const FAN_GAP_PX = 26;
+
+/** A label on the far side of its dot from the stack centre, so it does not
+ *  cover the neighbouring dots on the ring. */
+function outward(a: number) {
+  const [x, y] = [Math.cos(a), Math.sin(a)];
+  const v = y > 0.4 ? "top" : y < -0.4 ? "bottom" : "";
+  const h = x > 0.4 ? "left" : x < -0.4 ? "right" : "";
+  return { anchor: [v, h].filter(Boolean).join("-") || "center", offset: [x * 0.7, y * 0.7] };
+}
+
+/** A stack's nodes on a ring around the position they share, each with a leg
+ *  back to it. Laid out in pixels, so it is redrawn as the map moves. */
+function fanGeoJSON(m: maplibregl.Map, s: Stack): GeoJSON.FeatureCollection {
+  const now = Date.now() / 1000;
+  const c = m.project([s.lon, s.lat]);
+  const r = Math.max(FAN_MIN_RADIUS_PX, (s.nodes.length * FAN_GAP_PX) / (2 * Math.PI));
+  return collection(
+    s.nodes.flatMap((n, i) => {
+      const a = -Math.PI / 2 + (i / s.nodes.length) * 2 * Math.PI;
+      const at = m.unproject([c.x + r * Math.cos(a), c.y + r * Math.sin(a)]).toArray();
+      const props = nodeProps(n, now);
+      return [
+        feature({ type: "LineString", coordinates: [[s.lon, s.lat], at] }, { color: props.color }),
+        feature({ type: "Point", coordinates: at }, { ...props, ...outward(a) }),
+      ];
+    }),
+  );
 }
 
 /** Bounds of a circle around a point: the opening view is this node and
@@ -206,15 +300,41 @@ function trackGradient(points: TrackPoint[], windowSecs: number | null): maplibr
   return ["interpolate", ["linear"], ["line-progress"], ...stops] as maplibregl.ExpressionSpecification;
 }
 
-const COLORS = [
-  "match",
-  ["get", "kind"],
-  "local",
-  "#60a5fa",
-  "favorite",
-  "#fbbf24",
-  "#4ade80",
-] as maplibregl.ExpressionSpecification;
+/** Shared by single nodes and the nodes of a fanned-out stack. */
+const DOT_PAINT = {
+  "circle-radius": ["get", "radius"],
+  "circle-color": ["get", "color"],
+  "circle-opacity": ["get", "opacity"],
+  "circle-stroke-color": "#070b14",
+  "circle-stroke-width": 1.5,
+  "circle-stroke-opacity": ["get", "opacity"],
+} as maplibregl.CircleLayerSpecification["paint"];
+
+const LABEL = {
+  layout: {
+    "text-field": ["get", "label"],
+    "text-size": 11,
+    "text-offset": [0, 1.1],
+    "text-anchor": "top",
+    "text-optional": true,
+  },
+  paint: { "text-color": "#c6d0e0", "text-halo-color": "#070b14", "text-halo-width": 1.5 },
+} as Pick<maplibregl.SymbolLayerSpecification, "layout" | "paint">;
+
+const isStack = ["has", "count"] as maplibregl.ExpressionSpecification;
+const isPoint = ["==", ["geometry-type"], "Point"] as maplibregl.ExpressionSpecification;
+
+const LEGEND: [string, string][] = [
+  [LOCAL_COLOR, "this node"],
+  [FAVORITE_COLOR, "favourite"],
+  [HOP_COLORS[0], "direct"],
+  ...HOP_COLORS.slice(1).map((c, i): [string, string] => [
+    c,
+    i + 2 === HOP_COLORS.length ? `${i + 1}+ hops` : `${i + 1}`,
+  ]),
+  [UNKNOWN_HOPS_COLOR, "hops unknown"],
+  [NAMELESS_COLOR, "name not heard"],
+];
 
 export default function MapView({
   onMessage,
@@ -230,6 +350,9 @@ export default function MapView({
   const [heard, setHeard] = useStoredState<Heard>("vnode.mapHeard", "7d", oneOf(HEARD));
   const [span, setSpan] = useStoredState<Span>("vnode.mapTrackSpan", "all", oneOf(SPANS));
   const [selected, setSelected] = useState<number | null>(focus);
+  // The stack clicked open. Without one, the selected node's stack is fanned
+  // out, so the selected node is always visible on its own.
+  const [expanded, setExpanded] = useState<string | null>(null);
   // The full card over the map, where the node can also be asked for a
   // traceroute or a fresh position.
   const [details, setDetails] = useState<Node | null>(null);
@@ -256,6 +379,11 @@ export default function MapView({
           (n.last_heard !== null && now - n.last_heard <= window)),
     );
   }, [nodes.data, heard, focus]);
+
+  const stacks = useMemo(() => stackNodes(placed), [placed]);
+  const selectedNode = placed.find((n) => n.node_num === selected) ?? null;
+  const fanKey = expanded ?? (selectedNode ? stackKey(selectedNode) : null);
+  const fan = useMemo(() => stacks.find((s) => s.key === fanKey && s.nodes.length > 1) ?? null, [stacks, fanKey]);
 
   const provider = prefs?.map_provider ?? "openfreemap";
   const style = prefs?.map_style ?? "dark";
@@ -288,19 +416,20 @@ export default function MapView({
     m.on("load", () => {
       m.addSource("areas", { type: "geojson", data: EMPTY });
       m.addSource("nodes", { type: "geojson", data: EMPTY });
+      m.addSource("fan", { type: "geojson", data: EMPTY });
       // lineMetrics: line-progress (and so line-gradient) is only defined with it.
       m.addSource("track", { type: "geojson", data: EMPTY, lineMetrics: true });
       m.addLayer({
         id: "areas-fill",
         type: "fill",
         source: "areas",
-        paint: { "fill-color": COLORS, "fill-opacity": 0.08 },
+        paint: { "fill-color": ["get", "color"], "fill-opacity": 0.08 },
       });
       m.addLayer({
         id: "areas-line",
         type: "line",
         source: "areas",
-        paint: { "line-color": COLORS, "line-opacity": 0.5, "line-width": 1 },
+        paint: { "line-color": ["get", "color"], "line-opacity": 0.5, "line-width": 1 },
       });
       // Below the nodes, so the dots stay clickable.
       m.addLayer({
@@ -318,36 +447,56 @@ export default function MapView({
         filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-radius": 2.5, "circle-color": AGE_COLORS, "circle-opacity": 0.9 },
       });
+      m.addLayer({ id: "nodes-dot", type: "circle", source: "nodes", filter: ["!", isStack], paint: DOT_PAINT });
       m.addLayer({
-        id: "nodes-dot",
+        id: "stacks-dot",
         type: "circle",
         source: "nodes",
-        paint: {
-          "circle-radius": ["match", ["get", "kind"], "local", 7, "favorite", 6, 5],
-          "circle-color": COLORS,
-          "circle-stroke-color": "#070b14",
-          "circle-stroke-width": 1.5,
-        },
+        filter: isStack,
+        paint: { ...DOT_PAINT, "circle-radius": 9 },
       });
       m.addLayer({
-        id: "nodes-label",
+        id: "stacks-count",
         type: "symbol",
         source: "nodes",
-        layout: {
-          "text-field": ["get", "label"],
-          "text-size": 11,
-          "text-offset": [0, 1.1],
-          "text-anchor": "top",
-          "text-optional": true,
-        },
-        paint: { "text-color": "#c6d0e0", "text-halo-color": "#070b14", "text-halo-width": 1.5 },
+        filter: isStack,
+        layout: { "text-field": ["to-string", ["get", "count"]], "text-size": 10, "text-allow-overlap": true },
+        paint: { "text-color": "#070b14", "text-opacity": ["get", "opacity"] },
       });
-      m.on("click", "nodes-dot", (e: MapLayerMouseEvent) => {
-        const num = e.features?.[0]?.properties?.num;
-        if (typeof num === "number") setSelected(num);
+      m.addLayer({ id: "nodes-label", type: "symbol", source: "nodes", filter: ["!", isStack], ...LABEL });
+      m.addLayer({
+        id: "fan-legs",
+        type: "line",
+        source: "fan",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": ["get", "color"], "line-opacity": 0.8, "line-width": 1.5 },
       });
-      m.on("mouseenter", "nodes-dot", () => (m.getCanvas().style.cursor = "pointer"));
-      m.on("mouseleave", "nodes-dot", () => (m.getCanvas().style.cursor = ""));
+      m.addLayer({ id: "fan-dot", type: "circle", source: "fan", filter: isPoint, paint: DOT_PAINT });
+      m.addLayer({
+        id: "fan-label",
+        type: "symbol",
+        source: "fan",
+        filter: isPoint,
+        layout: { ...LABEL.layout, "text-anchor": ["get", "anchor"], "text-offset": ["get", "offset"] },
+        paint: LABEL.paint,
+      });
+      const clickable = ["nodes-dot", "fan-dot", "stacks-dot"];
+      for (const layer of clickable) {
+        m.on("click", layer, (e: MapLayerMouseEvent) => {
+          const props = e.features?.[0]?.properties;
+          if (typeof props?.key === "string") setExpanded(props.key);
+          else if (typeof props?.num === "number") {
+            setSelected(props.num);
+            if (layer === "nodes-dot") setExpanded(null);
+          }
+        });
+        m.on("mouseenter", layer, () => (m.getCanvas().style.cursor = "pointer"));
+        m.on("mouseleave", layer, () => (m.getCanvas().style.cursor = ""));
+      }
+      // A click on open map folds an opened stack back up.
+      m.on("click", (e) => {
+        if (!m.queryRenderedFeatures(e.point, { layers: clickable }).length) setExpanded(null);
+      });
       map.current = m;
       fitted.current = false;
       setLoaded((n) => n + 1);
@@ -362,9 +511,30 @@ export default function MapView({
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    const { points, areas } = toGeoJSON(placed);
+    const { points, areas } = toGeoJSON(stacks, fan?.key ?? null);
     (m.getSource("nodes") as GeoJSONSource | undefined)?.setData(points);
     (m.getSource("areas") as GeoJSONSource | undefined)?.setData(areas);
+  }, [stacks, fan, loaded]);
+
+  useEffect(() => {
+    const m = map.current;
+    const src = m?.getSource("fan") as GeoJSONSource | undefined;
+    if (!m || !src) return;
+    if (!fan) {
+      src.setData(EMPTY);
+      return;
+    }
+    const draw = () => src.setData(fanGeoJSON(m, fan));
+    draw();
+    m.on("move", draw);
+    return () => {
+      m.off("move", draw);
+    };
+  }, [fan, loaded]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
     if (!fitted.current && placed.length) {
       // Opening view: the focused node, else this node and 10 km around it,
       // else (no own position) everything placed.
@@ -399,7 +569,6 @@ export default function MapView({
 
   // The selected node's track, for this node and favourites (the only ones
   // with a position history).
-  const selectedNode = placed.find((n) => n.node_num === selected) ?? null;
   const tracked = selectedNode?.tracked ?? false;
   useEffect(() => {
     setTrack(null);
@@ -510,10 +679,15 @@ export default function MapView({
         )}
       </div>
       <p className="hidden px-1 text-[11px] text-mist-400 sm:block">
-        <span className="text-accent-400">●</span> this node · <span className="text-warn-400">●</span> favourites ·{" "}
-        <span className="text-signal-400">●</span> others. Circles show how far a blurred position can be off.
-        Favourites are shown however long ago they were heard. A selected node's track fades from amber (newest) to
-        slate (oldest).
+        {LEGEND.map(([color, label]) => (
+          <span key={label} className="mr-2 whitespace-nowrap">
+            <span style={{ color }}>●</span> {label}
+          </span>
+        ))}
+        <br />
+        Faded: not heard in the past 2 h. A numbered dot is several nodes at one position; click it to fan them out.
+        Circles show how far a blurred position can be off. Favourites are shown however long ago they were heard. A
+        selected node's track fades from amber (newest) to slate (oldest).
       </p>
     </div>
   );
