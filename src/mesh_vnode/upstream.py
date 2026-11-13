@@ -1,9 +1,9 @@
 """Upstream half: the single, permanent connection to the real node.
 
 This subclasses the `meshtastic` package's TCPInterface rather than re-speaking
-the protocol, so reconnects, heartbeats and the config handshake come for free.
-The one override is `_handleFromRadio`, which hands us the raw FromRadio bytes
-before the library parses them. Those exact bytes are what gets stored and later
+the protocol, so heartbeats and the config handshake come for free. The key
+override is `_handleFromRadio`, which hands us the raw FromRadio bytes before
+the library parses them. Those exact bytes are what gets stored and later
 replayed, which is the whole point: a replayed packet is byte-identical to what
 the node sent, so hop counts and PKI fields stay truthful.
 """
@@ -28,6 +28,8 @@ from .db import Database
 from .logging_setup import TRACE, hexdump, trace
 
 logger = logging.getLogger(__name__)
+
+CONNECT_TIMEOUT_S = 10
 
 RawSink = Callable[[bytes, "FrameContext"], None]
 StateSink = Callable[[str, str], None]
@@ -79,14 +81,15 @@ class _Interface(TCPInterface):
         super().__init__(hostname, portNumber=port, connectNow=True, timeout=timeout)
 
     def myConnect(self) -> None:
-        super().myConnect()
+        # Bounded, so a node that is still booting fails fast instead of
+        # blocking for the kernel's two-minute SYN timeout.
+        sock = socket.create_connection((self.hostname, self.portNumber), timeout=CONNECT_TIMEOUT_S)
+        sock.settimeout(None)
+        self.socket = sock
         # Without keepalive a node that loses power leaves a half-open socket:
         # recv() blocks forever and nothing notices until the library's
         # five-minute heartbeat fails. With it the kernel gives up after about
         # two minutes of silence, recv() raises, and the supervisor reconnects.
-        sock = self.socket
-        if sock is None:
-            return
         with contextlib.suppress(OSError, AttributeError):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
@@ -104,8 +107,30 @@ class _Interface(TCPInterface):
         rx = getattr(self, "_rxThread", None)
         return rx is None or rx.is_alive()
 
-    # The library resets its model here on connect and on reconnect, so it is
-    # the right place to start a fresh capture of the handshake.
+    def _reconnect(self) -> None:
+        """Drop the socket instead of reconnecting in place.
+
+        The library reconnects from whichever thread hit the error - the reader
+        on EOF, the heartbeat timer on a failed write - racing the supervisor.
+        When the node dropped us (a reboot, another client taking its single
+        TCP slot), that left a socket the supervisor had already given up on,
+        or an interface it believed was healthy that never read again. With
+        the socket gone the reader exits and the supervisor builds a fresh
+        interface, which also redoes the handshake.
+        """
+        sock, self.socket = self.socket, None
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
+
+    def sendHeartbeat(self) -> None:
+        # A failed write already dropped the socket; the supervisor takes it
+        # from there, so there is nothing left to report from the timer thread.
+        with contextlib.suppress(OSError):
+            super().sendHeartbeat()
+
     def _startConfig(self):
         self._capturing = True
         self._config_ord = 0
@@ -246,8 +271,8 @@ class Upstream:
             self._thread.join(timeout=5)
 
     def _supervise(self) -> None:
-        """Connect, and keep trying. The library reconnects a live socket by
-        itself; this loop only covers the case where it never came up or gave up.
+        """Connect, and keep trying. The only place that reconnects: a lost
+        link always gets a fresh interface and handshake (see _Interface._reconnect).
         """
         backoff = 2
         while not self._stop.is_set():
