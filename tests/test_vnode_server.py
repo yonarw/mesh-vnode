@@ -50,9 +50,9 @@ class FakeUpstream:
         )
 
 
-# FromRadio field 19, region_presets: new in firmware 2.8 and unknown to the
-# meshtastic package's protobufs. Built by hand, as the node would send it.
-REGION_PRESETS_FRAME = bytes([0x9A, 0x01, 0x02, 0x08, 0x01])
+# FromRadio field 99: a variant newer than the meshtastic package, as
+# region_presets was before the package caught up with firmware 2.8.
+FUTURE_FRAME = bytes([0x9A, 0x06, 0x02, 0x08, 0x01])
 
 
 def seed_config(db: Database) -> None:
@@ -76,7 +76,7 @@ def seed_config(db: Database) -> None:
     fr.metadata.firmware_version = "2.8.1"
     add("metadata", "metadata", fr.SerializeToString())
 
-    add("unknown:3", "other", REGION_PRESETS_FRAME)
+    add("unknown:3", "other", FUTURE_FRAME)
 
     fr = mesh_pb2.FromRadio()
     fr.channel.index = 0
@@ -239,13 +239,13 @@ async def test_handshake_follows_the_firmware_order(running):
 
 
 async def test_a_frame_newer_than_the_package_is_replayed_byte_for_byte(running):
-    """region_presets: the package cannot parse it, the app can."""
+    """The package cannot parse it, the app can."""
     _, _, _, connect = running
     client = await connect()
     await client.want_config(1)
     frames = await client.collect()
     unknown = [f for f in frames if f.WhichOneof("payload_variant") is None]
-    assert [f.SerializeToString() for f in unknown] == [REGION_PRESETS_FRAME]
+    assert [f.SerializeToString() for f in unknown] == [FUTURE_FRAME]
     await client.close()
 
 

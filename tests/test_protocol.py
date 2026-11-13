@@ -38,19 +38,30 @@ def test_queue_status_round_trips():
 def test_config_frame_keys_are_stable():
     fr = mesh_pb2.FromRadio()
     fr.channel.index = 2
-    assert proto.config_frame_key(fr) == ("channel:2", "channel")
+    assert proto.config_frame_key(fr, 7) == ("channel:2", "channel")
 
     fr = mesh_pb2.FromRadio()
     fr.config.lora.hop_limit = 3
-    assert proto.config_frame_key(fr) == ("config:lora", "config")
+    assert proto.config_frame_key(fr, 7) == ("config:lora", "config")
 
     fr = mesh_pb2.FromRadio()
     fr.node_info.num = 99
-    assert proto.config_frame_key(fr) == ("node_info:99", "node_info")
+    assert proto.config_frame_key(fr, 7) == ("node_info:99", "node_info")
 
     fr = mesh_pb2.FromRadio()
     fr.packet.id = 1
-    assert proto.config_frame_key(fr) is None
+    assert proto.config_frame_key(fr, 7) is None
+
+    fr = mesh_pb2.FromRadio()
+    fr.region_presets.SetInParent()
+    assert proto.config_frame_key(fr, 7) == ("region_presets:7", "other")
+
+
+def test_config_sections_the_package_cannot_name_do_not_share_a_key():
+    a = mesh_pb2.FromRadio.FromString(bytes([0x4A, 0x03, 0xFA, 0x07, 0x00]))  # field 127
+    b = mesh_pb2.FromRadio.FromString(bytes([0x4A, 0x03, 0xF2, 0x07, 0x00]))  # field 126
+    assert proto.config_frame_key(a, 3) == ("moduleConfig:3", "moduleConfig")
+    assert proto.config_frame_key(b, 4) == ("moduleConfig:4", "moduleConfig")
 
 
 def test_decode_telemetry_device_metrics():

@@ -68,30 +68,46 @@ def parse_to_radio(raw: bytes) -> mesh_pb2.ToRadio:
     return msg
 
 
-def config_frame_key(fr: mesh_pb2.FromRadio) -> tuple[str, str] | None:
-    """Map a config-phase FromRadio to a (key, kind) pair.
+# Live traffic and control frames: not part of the handshake even when they
+# arrive during it.
+LIVE_VARIANTS = frozenset(
+    {
+        "packet",
+        "config_complete_id",
+        "log_record",
+        "queueStatus",
+        "rebooted",
+        "xmodemPacket",
+        "mqttClientProxyMessage",
+        "clientNotification",
+    }
+)
 
-    The key is stable across reconnects so a refreshed handshake overwrites the
-    previous capture instead of piling up.
+
+def config_frame_key(fr: mesh_pb2.FromRadio, ord_: int) -> tuple[str, str] | None:
+    """Map a config-phase FromRadio to a (key, kind) pair, None if it is live.
+
+    Everything else is part of the handshake and kept, including variants the
+    meshtastic package cannot name (region_presets was one, in firmware 2.8):
+    those are keyed by their position and replayed byte for byte.
     """
     which = fr.WhichOneof("payload_variant")
-    if which == "my_info":
-        return "my_info", "my_info"
-    if which == "metadata":
-        return "metadata", "metadata"
+    if which in LIVE_VARIANTS:
+        return None
+    if which in ("my_info", "metadata"):
+        return which, which
     if which == "channel":
         return f"channel:{fr.channel.index}", "channel"
-    if which == "config":
-        return f"config:{fr.config.WhichOneof('payload_variant')}", "config"
-    if which == "moduleConfig":
-        return f"moduleConfig:{fr.moduleConfig.WhichOneof('payload_variant')}", "moduleConfig"
+    if which in ("config", "moduleConfig"):
+        section = getattr(fr, which).WhichOneof("payload_variant")
+        return f"{which}:{section or ord_}", which
     if which == "node_info":
         return f"node_info:{fr.node_info.num}", "node_info"
-    if which == "deviceuiConfig":
-        return "deviceuiConfig", "other"
     if which == "fileInfo":
         return f"fileInfo:{fr.fileInfo.file_name}", "other"
-    return None
+    if which == "deviceuiConfig":
+        return which, "other"
+    return f"{which or 'unknown'}:{ord_}", "other"
 
 
 def packet_meta(packet: mesh_pb2.MeshPacket) -> dict[str, Any]:

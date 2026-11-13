@@ -218,10 +218,11 @@ def test_precision_bits_translate_to_distance():
 
 
 def test_a_handshake_frame_the_package_cannot_name_is_captured(up):
-    """region_presets arrives mid-handshake; losing it would change what the
-    app sees compared with talking to the node directly."""
+    """Firmware ahead of the meshtastic package (region_presets was, in 2.8):
+    losing the frame would change what the app sees compared with talking to
+    the node directly."""
     iface = type("I", (), {"_capturing": True, "_captured": [], "_config_ord": 5})()
-    raw = bytes([0x9A, 0x01, 0x02, 0x08, 0x01])
+    raw = bytes([0x9A, 0x06, 0x02, 0x08, 0x01])  # FromRadio field 99
     up._on_raw_frame(raw, iface)
     assert iface._captured == [("unknown:5", "other", 5, raw)]
 

@@ -202,7 +202,7 @@ def probe(
             for payload in decoder.feed(data):
                 fr = mesh_pb2.FromRadio()
                 fr.ParseFromString(payload)
-                # None: a variant newer than the package (e.g. region_presets).
+                # None: a variant newer than the meshtastic package.
                 which = fr.WhichOneof("payload_variant") or "unknown"
                 counts[which] = counts.get(which, 0) + 1
                 if which == "packet" and fr.packet.HasField("decoded"):

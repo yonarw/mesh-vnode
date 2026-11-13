@@ -446,7 +446,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "meshtastic", specifier = ">=2.7.11" },
+    { name = "meshtastic", url = "https://github.com/meshtastic/python/archive/0a1835760c2437314a2d3544bbdd8b6fead559bc.tar.gz" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyyaml", specifier = ">=6" },
@@ -465,7 +465,7 @@ dev = [
 [[package]]
 name = "meshtastic"
 version = "2.7.11"
-source = { registry = "https://pypi.org/simple" }
+source = { url = "https://github.com/meshtastic/python/archive/0a1835760c2437314a2d3544bbdd8b6fead559bc.tar.gz" }
 dependencies = [
     { name = "bleak" },
     { name = "packaging" },
@@ -476,10 +476,30 @@ dependencies = [
     { name = "requests" },
     { name = "tabulate" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/79/4c8d282e792f35b4895611a27b236153f3dac31f3d46e87f35fe46d6de7f/meshtastic-2.7.11.tar.gz", hash = "sha256:41a8c84b577daff173d36db9fdbc8bf2c7228b58e580474e9f53802ed8ea7d4a", size = 376814, upload-time = "2026-07-17T17:37:11.881Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/8d/8f89a75f195aca9241208f2fb26c76ea18d51f2e43fee252875ac4debc85/meshtastic-2.7.11-py3-none-any.whl", hash = "sha256:adb020f2cd7ace53896c6bf487f2d2136498dd88052c41a2aa6fb7a4634971b5", size = 428444, upload-time = "2026-07-17T17:37:10.352Z" },
+sdist = { hash = "sha256:78ffbf30e1235bca08e755793cde6decc0bb85ffba2cadfaa2fbdebd371c8397" }
+
+[package.metadata]
+requires-dist = [
+    { name = "argcomplete", marker = "extra == 'cli'", specifier = ">=3.5.2,<4.0.0" },
+    { name = "bleak", specifier = ">=0.22.3" },
+    { name = "dash", marker = "extra == 'analysis'", specifier = ">=2.17.1,<3.0.0" },
+    { name = "dash-bootstrap-components", marker = "extra == 'analysis'", specifier = ">=1.6.0,<2.0.0" },
+    { name = "dotmap", marker = "extra == 'cli'", specifier = ">=1.3.30,<2.0.0" },
+    { name = "packaging", specifier = ">=24.0" },
+    { name = "pandas", marker = "extra == 'analysis'", specifier = ">=2.2.2,<3.0.0" },
+    { name = "pandas-stubs", marker = "extra == 'analysis'", specifier = ">=2.2.2.240603,<3.0.0.0" },
+    { name = "print-color", marker = "extra == 'cli'", specifier = ">=0.4.6,<0.5.0" },
+    { name = "protobuf", specifier = ">=4.21.12" },
+    { name = "pypubsub", specifier = ">=4.0.3,<5.0.0" },
+    { name = "pyqrcode", marker = "extra == 'cli'", specifier = ">=1.2.1,<2.0.0" },
+    { name = "pyserial", specifier = ">=3.5,<4.0" },
+    { name = "pytap2", marker = "extra == 'tunnel'", specifier = ">=2.3.0,<3.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
+    { name = "requests", specifier = ">=2.31.0,<3.0.0" },
+    { name = "tabulate", specifier = ">=0.9.0,<0.10.0" },
+    { name = "wcwidth", marker = "extra == 'cli'", specifier = ">=0.2.13,<0.3.0" },
 ]
+provides-extras = ["analysis", "cli", "tunnel"]
 
 [[package]]
 name = "packaging"

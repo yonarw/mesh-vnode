@@ -574,12 +574,7 @@ class Upstream:
             )
 
         if iface._capturing:
-            keyed = proto.config_frame_key(fr)
-            if keyed is None and which is None:
-                # A variant newer than the meshtastic package's protobufs, such
-                # as region_presets (firmware 2.8). Kept byte-for-byte in its
-                # place in the sequence: the app knows what it is even if we don't.
-                keyed = (f"unknown:{iface._config_ord}", "other")
+            keyed = proto.config_frame_key(fr, iface._config_ord)
             if keyed is not None:
                 key, kind = keyed
                 iface._captured.append((key, kind, iface._config_ord, raw))

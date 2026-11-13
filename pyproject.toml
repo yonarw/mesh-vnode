@@ -8,7 +8,9 @@ requires-python = ">=3.11"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
-    "meshtastic>=2.7.11",
+    # Unreleased master: 2.7.11 plus the firmware 2.8 protobufs, which no
+    # PyPI release carries yet. Back to a version range once one does.
+    "meshtastic @ https://github.com/meshtastic/python/archive/0a1835760c2437314a2d3544bbdd8b6fead559bc.tar.gz",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
@@ -32,6 +34,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mesh_vnode"]
